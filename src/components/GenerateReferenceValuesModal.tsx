@@ -43,6 +43,8 @@ import {
 } from '../k8s/resources';
 import type { ConfigMapKind, JobKind, SecretKind } from '../k8s/types';
 import { jobFailed, jobFailureMessage } from '../utils/job';
+import { useCanCreateJob } from '../utils/rbac/useTrusteePermissions';
+import PermissionHint from '../utils/rbac/PermissionHint';
 import './trustee.css';
 
 interface Props {
@@ -129,6 +131,7 @@ const GenerateReferenceValuesModal: FC<Props> = ({
   const [initdata, setInitdata] = useState('');
   const [gpu, setGpu] = useState(false);
   const [xfam, setXfam] = useState('x87,sse,avx');
+  const { allowed: canCreateJob, loading: rbacLoading } = useCanCreateJob(namespace);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [started, setStarted] = useState(false);
@@ -382,6 +385,7 @@ const GenerateReferenceValuesModal: FC<Props> = ({
             )}
           </Alert>
 
+          <PermissionHint allowed={canCreateJob} loading={rbacLoading} />
           {pullSecretUnreadable && !started && (
             <Alert
               variant="warning"
@@ -559,7 +563,7 @@ const GenerateReferenceValuesModal: FC<Props> = ({
             variant="primary"
             onClick={() => void onGenerate()}
             isLoading={busy}
-            isDisabled={busy || !valid}
+            isDisabled={busy || !valid || rbacLoading || !canCreateJob}
           >
             {t('Generate')}
           </Button>

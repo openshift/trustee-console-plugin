@@ -26,6 +26,8 @@ import {
   UBI9_IMAGE,
 } from '../k8s/resources';
 import type { JobKind } from '../k8s/types';
+import { useCanCreateJob } from '../utils/rbac/useTrusteePermissions';
+import PermissionHint from '../utils/rbac/PermissionHint';
 
 const PREFIX = 'trustee-openshift-console-plugin';
 const DNS_1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
@@ -94,6 +96,7 @@ const GenerateTlsSecretModal: FC<Props> = ({
   onClose,
 }) => {
   const { t } = useTranslation('plugin__trustee-openshift-console-plugin');
+  const { allowed: canCreateJob, loading: rbacLoading } = useCanCreateJob(namespace);
 
   const [secretName, setSecretName] = useState(
     defaultSecretName || `${trusteeConfigName || 'kbs'}-https-tls`,
@@ -302,6 +305,7 @@ const GenerateTlsSecretModal: FC<Props> = ({
               p: P,
             })}
           </Content>
+          <PermissionHint allowed={canCreateJob} loading={rbacLoading} />
         </Form>
       </ModalBody>
       <ModalFooter>
@@ -311,7 +315,7 @@ const GenerateTlsSecretModal: FC<Props> = ({
               variant="primary"
               onClick={() => void onGenerate()}
               isLoading={busy || (started && !failed)}
-              isDisabled={!valid || busy || (started && !failed)}
+              isDisabled={!valid || busy || (started && !failed) || rbacLoading || !canCreateJob}
             >
               {started && failed ? t('Retry') : t('Generate')}
             </Button>

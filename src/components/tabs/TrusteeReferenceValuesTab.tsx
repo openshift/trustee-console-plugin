@@ -26,6 +26,7 @@ import {
 } from '../../k8s/resources';
 import type { ConfigMapKind, NodeKind } from '../../k8s/types';
 import { cvmPeerPodsEnabled, detectClusterTee } from '../../utils/topology';
+import { useCanPatchConfigMap } from '../../utils/rbac/useTrusteePermissions';
 import type { TrusteeTabProps } from './types';
 import '../trustee.css';
 
@@ -43,6 +44,10 @@ const TrusteeReferenceValuesTab: FC<TrusteeTabProps> = ({ obj }) => {
   const [modalOpen, setModalOpen] = useState(false);
   const name = obj?.metadata?.name;
   const namespace = obj?.metadata?.namespace ?? '';
+  const { allowed: canPatch, loading: rbacLoading } = useCanPatchConfigMap(
+    name ? `${name}-rvps-reference-values` : undefined,
+    namespace,
+  );
 
   // Auto-detect the TEE platform from node NFD labels so the generator targets the
   // right hardware without a manual pick (a wrong choice makes evidence never
@@ -189,6 +194,7 @@ const TrusteeReferenceValuesTab: FC<TrusteeTabProps> = ({ obj }) => {
           'Expected measurement values the Reference Value Provider Service checks against TEE evidence — including the PCR8 hash produced by the initdata builder.',
         )}
         preferredKey="reference-values.json"
+        editable={!rbacLoading && canPatch}
       />
     </PageSection>
   );

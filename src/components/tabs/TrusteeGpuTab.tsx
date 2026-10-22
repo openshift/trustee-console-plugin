@@ -1,9 +1,11 @@
+import { useState } from 'react';
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ResourceLink, useK8sWatchResource } from '@openshift-console/dynamic-plugin-sdk';
+import { ResourceLink, k8sPatch, useK8sWatchResource } from '@openshift-console/dynamic-plugin-sdk';
 import { Link } from 'react-router';
 import {
   Alert,
+  Button,
   Card,
   CardBody,
   CardTitle,
@@ -15,10 +17,13 @@ import {
   DescriptionListTerm,
   Label,
   PageSection,
+  TextInput,
 } from '@patternfly/react-core';
 import { CheckCircleIcon } from '@patternfly/react-icons';
-import { ConfigMapGVK, TrusteeConfigModelRef } from '../../k8s/resources';
+import { ConfigMapGVK, ConfigMapModel, TrusteeConfigModelRef } from '../../k8s/resources';
 import type { ConfigMapKind } from '../../k8s/types';
+import { useCanCreateSecret, useCanPatchConfigMap } from '../../utils/rbac/useTrusteePermissions';
+import CreatePccsSecretModal from '../CreatePccsSecretModal';
 import type { TrusteeTabProps } from './types';
 import '../trustee.css';
 
@@ -33,6 +38,18 @@ const TrusteeGpuTab: FC<TrusteeTabProps> = ({ obj }) => {
   const { t } = useTranslation('plugin__trustee-openshift-console-plugin');
   const name = obj?.metadata?.name;
   const namespace = obj?.metadata?.namespace ?? '';
+  const { allowed: canCreateSec, loading: rbacLoading } = useCanCreateSecret(namespace);
+  const kbsCmName = name ? `${name}-kbs-config` : undefined;
+  const { allowed: canPatchCm, loading: patchRbacLoading } = useCanPatchConfigMap(
+    kbsCmName,
+    namespace,
+  );
+  const [pccsModalOpen, setPccsModalOpen] = useState(false);
+  const [pccsCreated, setPccsCreated] = useState('');
+  const [editingUrl, setEditingUrl] = useState(false);
+  const [urlDraft, setUrlDraft] = useState('');
+  const [urlSaving, setUrlSaving] = useState(false);
+  const [urlSaveError, setUrlSaveError] = useState('');
 
   const [cm, loaded, loadError] = useK8sWatchResource<ConfigMapKind>({
     groupVersionKind: ConfigMapGVK,
@@ -43,11 +60,34 @@ const TrusteeGpuTab: FC<TrusteeTabProps> = ({ obj }) => {
   // `loaded`, which would otherwise hang on "Loading…" forever.
   const settled = loaded || Boolean(loadError);
 
-  const cfgText = Object.values(cm?.data ?? {}).join('\n');
+  const cfgKey = Object.keys(cm?.data ?? {}).find((k) => k.endsWith('.toml')) ?? 'kbs-config.toml';
+  const cfgText = cm?.data?.[cfgKey] ?? '';
   const hasNvidia = /nvidia_verifier/i.test(cfgText);
   const remoteMode = /type\s*=\s*"?Remote"?/i.test(cfgText);
   const urlMatch = /verifier_url\s*=\s*"([^"]+)"/i.exec(cfgText);
   const verifierUrl = urlMatch?.[1] ?? DEFAULT_NRAS_URL;
+
+  const saveUrl = async () => {
+    if (!cm || !kbsCmName) return;
+    setUrlSaving(true);
+    setUrlSaveError('');
+    try {
+      const newCfg = cfgText.replace(
+        /verifier_url\s*=\s*"[^"]*"/i,
+        `verifier_url = "${urlDraft.trim()}"`,
+      );
+      await k8sPatch({
+        model: ConfigMapModel,
+        resource: { metadata: { name: kbsCmName, namespace } },
+        data: [{ op: 'replace', path: `/data/${cfgKey.replace(/\//g, '~1')}`, value: newCfg }],
+      });
+      setEditingUrl(false);
+    } catch (e) {
+      setUrlSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUrlSaving(false);
+    }
+  };
 
   const testCmd = `oc exec -n ${namespace || '<namespace>'} deployment/trustee-deployment -- curl -I https://nras.attestation.nvidia.com`;
 
@@ -90,8 +130,69 @@ const TrusteeGpuTab: FC<TrusteeTabProps> = ({ obj }) => {
               </DescriptionListGroup>
               <DescriptionListGroup>
                 <DescriptionListTerm>{t('NRAS verifier URL')}</DescriptionListTerm>
-                <DescriptionListDescription className="trustee-openshift-console-plugin__mono">
-                  {verifierUrl}
+                <DescriptionListDescription>
+                  {editingUrl ? (
+                    <div>
+                      <TextInput
+                        id="nras-url"
+                        value={urlDraft}
+                        onChange={(_e, v) => {
+                          setUrlDraft(v);
+                        }}
+                        style={{ fontFamily: 'var(--pf-t--global--font--family--mono)' }}
+                      />
+                      <div className="trustee-openshift-console-plugin__mt">
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={() => void saveUrl()}
+                          isLoading={urlSaving}
+                          isDisabled={urlSaving || urlDraft.trim() === verifierUrl}
+                        >
+                          {t('Save')}
+                        </Button>{' '}
+                        <Button
+                          variant="link"
+                          size="sm"
+                          onClick={() => {
+                            setEditingUrl(false);
+                          }}
+                          isDisabled={urlSaving}
+                        >
+                          {t('Cancel')}
+                        </Button>
+                      </div>
+                      {urlSaveError && (
+                        <Alert
+                          variant="danger"
+                          isInline
+                          isPlain
+                          title={urlSaveError}
+                          className="trustee-openshift-console-plugin__mt"
+                        />
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <span className="trustee-openshift-console-plugin__mono">{verifierUrl}</span>
+                      {hasNvidia && canPatchCm && !patchRbacLoading && (
+                        <>
+                          {' '}
+                          <Button
+                            variant="link"
+                            size="sm"
+                            isInline
+                            onClick={() => {
+                              setUrlDraft(verifierUrl);
+                              setEditingUrl(true);
+                            }}
+                          >
+                            {t('Edit')}
+                          </Button>
+                        </>
+                      )}
+                    </>
+                  )}
                 </DescriptionListDescription>
               </DescriptionListGroup>
             </DescriptionList>
@@ -174,6 +275,23 @@ const TrusteeGpuTab: FC<TrusteeTabProps> = ({ obj }) => {
                 {t('Intel Trusted Services API portal')}
               </a>
               {t(' to verify the CPU TEE that hosts the confidential GPU.')}
+              <div className="trustee-openshift-console-plugin__mt">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setPccsModalOpen(true);
+                  }}
+                  isDisabled={rbacLoading || !canCreateSec}
+                >
+                  {t('Create PCCS API key secret')}
+                </Button>
+                {pccsCreated && (
+                  <span className="trustee-openshift-console-plugin__icon-success trustee-openshift-console-plugin__ml">
+                    {t('Created {{name}}', { name: pccsCreated })}
+                  </span>
+                )}
+              </div>
             </Content>
             <Content component="li">
               {t(
@@ -239,6 +357,18 @@ const TrusteeGpuTab: FC<TrusteeTabProps> = ({ obj }) => {
           </DescriptionList>
         </CardBody>
       </Card>
+      {pccsModalOpen && (
+        <CreatePccsSecretModal
+          namespace={namespace}
+          onCreated={(n) => {
+            setPccsCreated(n);
+            setPccsModalOpen(false);
+          }}
+          onClose={() => {
+            setPccsModalOpen(false);
+          }}
+        />
+      )}
     </PageSection>
   );
 };

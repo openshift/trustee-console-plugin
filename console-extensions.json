@@ -46,7 +46,8 @@
       "perspective": "admin",
       "name": "%plugin__trustee-openshift-console-plugin~Confidential Attestation%",
       "insertAfter": "confidential-containers"
-    }
+    },
+    "flags": { "required": ["TRUSTEE_TRUSTEECONFIG"] }
   },
   {
     "type": "console.navigation/href",
@@ -67,7 +68,8 @@
       "section": "trustee",
       "name": "%plugin__trustee-openshift-console-plugin~Setup%",
       "href": "/trustee/setup"
-    }
+    },
+    "flags": { "required": ["TRUSTEE_TRUSTEECONFIG"] }
   },
   {
     "type": "console.navigation/href",
@@ -145,6 +147,15 @@
       "path": "/trustee/setup",
       "component": { "$codeRef": "DeployTrusteeWizard" }
     }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/trustee/verify/:ns/:name",
+      "component": { "$codeRef": "TrusteeVerifyRedirect" }
+    },
+    "flags": { "required": ["TRUSTEE_TRUSTEECONFIG"] }
   },
   {
     "type": "console.tab/horizontalNav",

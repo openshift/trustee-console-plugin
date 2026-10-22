@@ -61,6 +61,14 @@ export interface SetupInputs {
 }
 
 /**
+ * True once every required, non-manual step is satisfied — i.e. the deployment can
+ * actually attest a workload. Gates the final "verify" action so it isn't offered
+ * before reference values and initdata are registered.
+ */
+export const requiredStepsReady = (i: SetupInputs): boolean =>
+  i.operatorReady && i.tcCreated && i.kbsReady && i.refValuesSet && i.initdataRegistered;
+
+/**
  * Build the ordered setup checklist. Optional/automatic steps only leave `todo`
  * once a TrusteeConfig exists, so the list reads as a genuine sequence rather than
  * lighting everything up at once.
@@ -89,7 +97,7 @@ export const buildSetupSteps = (i: SetupInputs): SetupStep[] => {
     {
       id: 'initdata',
       required: true,
-      state: !started ? 'todo' : i.initdataRegistered ? 'ok' : 'todo',
+      state: !started ? 'todo' : i.initdataRegistered ? 'ok' : 'attention',
       tab: 'initdata',
     },
     { id: 'policies', required: false, state: 'todo', tab: 'policies' },
@@ -98,14 +106,10 @@ export const buildSetupSteps = (i: SetupInputs): SetupStep[] => {
     // Only meaningful for hub-and-spoke; co-located workloads don't need a Route, so
     // its absence is neutral (todo), never an alarm.
     { id: 'route', required: false, state: i.routeAdmitted ? 'ok' : 'todo' },
-    { id: 'verify', required: true, state: 'todo' },
+    {
+      id: 'verify',
+      required: true,
+      state: requiredStepsReady(i) ? 'ok' : 'todo',
+    },
   ];
 };
-
-/**
- * True once every required, non-manual step is satisfied — i.e. the deployment can
- * actually attest a workload. Gates the final "verify" action so it isn't offered
- * before reference values exist.
- */
-export const requiredStepsReady = (i: SetupInputs): boolean =>
-  i.operatorReady && i.tcCreated && i.kbsReady && i.refValuesSet;

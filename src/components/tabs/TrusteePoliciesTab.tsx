@@ -2,9 +2,41 @@ import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Content, Gallery, PageSection } from '@patternfly/react-core';
 import ConfigMapEditor from '../shared/ConfigMapEditor';
-import { regoTemplatesForPolicy, validateRego } from '../../utils/rego';
+import { regoTemplatesForPolicy, validateRego, regoWarning } from '../../utils/rego';
+import { useCanPatchConfigMap } from '../../utils/rbac/useTrusteePermissions';
 import type { TrusteeTabProps } from './types';
 import '../trustee.css';
+
+/**
+ * One policy editor card. Each policy is a separate ConfigMap, so the patch
+ * permission has to be checked against that card's own ConfigMap — a grant
+ * scoped to one policy must not enable (or disable) the editors for the others.
+ */
+const PolicyEditorCard: FC<{
+  namespace: string;
+  configMapName: string;
+  suffix: string;
+  title: string;
+  description: string;
+}> = ({ namespace, configMapName, suffix, title, description }) => {
+  const { allowed: canPatch, loading: rbacLoading } = useCanPatchConfigMap(
+    configMapName,
+    namespace,
+  );
+  return (
+    <ConfigMapEditor
+      namespace={namespace}
+      configMapName={configMapName}
+      title={title}
+      description={description}
+      preferredKey="policy.rego"
+      templates={regoTemplatesForPolicy(suffix)}
+      validate={validateRego}
+      warn={regoWarning}
+      editable={!rbacLoading && canPatch}
+    />
+  );
+};
 
 /** Edit the Rego policies the operator generates from a TrusteeConfig. */
 const TrusteePoliciesTab: FC<TrusteeTabProps> = ({ obj }) => {
@@ -57,15 +89,13 @@ const TrusteePoliciesTab: FC<TrusteeTabProps> = ({ obj }) => {
       </Content>
       <Gallery hasGutter minWidths={{ default: '480px' }}>
         {policies.map((p) => (
-          <ConfigMapEditor
+          <PolicyEditorCard
             key={p.suffix}
             namespace={namespace}
             configMapName={`${name}-${p.suffix}`}
+            suffix={p.suffix}
             title={p.title}
             description={p.desc}
-            preferredKey="policy.rego"
-            templates={regoTemplatesForPolicy(p.suffix)}
-            validate={validateRego}
           />
         ))}
       </Gallery>

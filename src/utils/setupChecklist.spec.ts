@@ -66,11 +66,11 @@ describe('buildSetupSteps', () => {
     expect(step(present, 'reference-values').state).toBe('ok');
   });
 
-  it('adds a required initdata step — ok once its PCR8 (init_data) is registered', () => {
+  it('adds a required initdata step — attention until its PCR8 (init_data) is registered', () => {
     const missing = buildSetupSteps({ ...base, tcCreated: true });
     expect(step(missing, 'initdata')).toMatchObject({
       required: true,
-      state: 'todo',
+      state: 'attention',
       tab: 'initdata',
     });
 
@@ -97,11 +97,20 @@ describe('buildSetupSteps', () => {
 });
 
 describe('requiredStepsReady', () => {
-  it('is false until operator + TrusteeConfig + KBS + reference values are all satisfied', () => {
+  it('is false until operator + TrusteeConfig + KBS + reference values + initdata are all satisfied', () => {
     expect(requiredStepsReady(base)).toBe(false);
     expect(requiredStepsReady({ ...base, tcCreated: true, kbsReady: true })).toBe(false);
     expect(
       requiredStepsReady({ ...base, tcCreated: true, kbsReady: true, refValuesSet: true }),
+    ).toBe(false);
+    expect(
+      requiredStepsReady({
+        ...base,
+        tcCreated: true,
+        kbsReady: true,
+        refValuesSet: true,
+        initdataRegistered: true,
+      }),
     ).toBe(true);
   });
 
@@ -111,9 +120,28 @@ describe('requiredStepsReady', () => {
       tcCreated: true,
       kbsReady: true,
       refValuesSet: true,
-      initdataRegistered: false,
+      initdataRegistered: true,
       routeAdmitted: false,
     };
     expect(requiredStepsReady(ready)).toBe(true);
+  });
+
+  it('marks verify ok only when requiredStepsReady', () => {
+    const notReady = buildSetupSteps({
+      ...base,
+      tcCreated: true,
+      kbsReady: true,
+      refValuesSet: true,
+    });
+    expect(step(notReady, 'verify').state).toBe('todo');
+
+    const ready = buildSetupSteps({
+      ...base,
+      tcCreated: true,
+      kbsReady: true,
+      refValuesSet: true,
+      initdataRegistered: true,
+    });
+    expect(step(ready, 'verify').state).toBe('ok');
   });
 });

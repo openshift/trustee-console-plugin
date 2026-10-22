@@ -2,6 +2,7 @@ import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ResourceLink, useK8sWatchResource } from '@openshift-console/dynamic-plugin-sdk';
 import {
+  Alert,
   Card,
   CardBody,
   CardTitle,
@@ -25,6 +26,12 @@ import {
   TRUSTEE_OPERATOR_DEPLOYMENT,
 } from '../../k8s/resources';
 import type { ContainerStatusKind, DeploymentKind, PodKind } from '../../k8s/types';
+import {
+  deploymentRemediation,
+  unhealthyConditions,
+  HIGH_RESTART_THRESHOLD,
+  type ConditionKind,
+} from '../../utils/healthRemediation';
 import type { TrusteeTabProps } from './types';
 import '../trustee.css';
 
@@ -40,7 +47,12 @@ const useDeployment = (name: string, namespace: string): [DeploymentKind | undef
   return [data, loaded || Boolean(loadError)];
 };
 
-const DeploymentHealth: FC<{ name: string; namespace: string }> = ({ name, namespace }) => {
+const DeploymentHealth: FC<{
+  name: string;
+  namespace: string;
+  pods: PodKind[];
+  isOperator?: boolean;
+}> = ({ name, namespace, pods, isOperator = false }) => {
   const { t } = useTranslation('plugin__trustee-openshift-console-plugin');
   const [deployment, settled] = useDeployment(name, namespace);
 
@@ -63,6 +75,8 @@ const DeploymentHealth: FC<{ name: string; namespace: string }> = ({ name, names
     }
   }
 
+  const hint = settled ? deploymentRemediation(deployment, pods, isOperator) : undefined;
+
   return (
     <DescriptionListGroup>
       <DescriptionListTerm>
@@ -76,22 +90,33 @@ const DeploymentHealth: FC<{ name: string; namespace: string }> = ({ name, names
         {!settled ? (
           <Spinner size="sm" aria-label={t('Loading')} />
         ) : (
-          <Flex gap={{ default: 'gapSm' }} alignItems={{ default: 'alignItemsCenter' }}>
-            <FlexItem>
-              <Label color={color} isCompact>
-                {text}
-              </Label>
-            </FlexItem>
-            {deployment && (
-              <FlexItem className="trustee-openshift-console-plugin__muted">
-                {t('{{ready}}/{{desired}} ready, {{available}} available', {
-                  ready,
-                  desired,
-                  available,
-                })}
+          <>
+            <Flex gap={{ default: 'gapSm' }} alignItems={{ default: 'alignItemsCenter' }}>
+              <FlexItem>
+                <Label color={color} isCompact>
+                  {text}
+                </Label>
               </FlexItem>
+              {deployment && (
+                <FlexItem className="trustee-openshift-console-plugin__muted">
+                  {t('{{ready}}/{{desired}} ready, {{available}} available', {
+                    ready,
+                    desired,
+                    available,
+                  })}
+                </FlexItem>
+              )}
+            </Flex>
+            {hint && (
+              <Alert
+                variant={hint.severity === 'danger' ? 'danger' : 'warning'}
+                isInline
+                isPlain
+                title={t(hint.message)}
+                className="trustee-openshift-console-plugin__mt"
+              />
             )}
-          </Flex>
+          </>
         )}
       </DescriptionListDescription>
     </DescriptionListGroup>
@@ -137,9 +162,44 @@ const PodRow: FC<{ pod: PodKind; namespace: string }> = ({ pod, namespace }) => 
           <FlexItem className="trustee-openshift-console-plugin__muted">
             {t('{{count}} restarts', { count: restarts })}
           </FlexItem>
+          {restarts > HIGH_RESTART_THRESHOLD && (
+            <FlexItem>
+              <Label color="orange" isCompact>
+                {t('High restart count')}
+              </Label>
+            </FlexItem>
+          )}
         </Flex>
       </DescriptionListDescription>
     </DescriptionListGroup>
+  );
+};
+
+const ConditionsCard: FC<{ conditions?: ConditionKind[] }> = ({ conditions }) => {
+  const { t } = useTranslation('plugin__trustee-openshift-console-plugin');
+  const bad = unhealthyConditions(conditions);
+  if (bad.length === 0) return null;
+  return (
+    <Card className="trustee-openshift-console-plugin__mb">
+      <CardTitle>{t('TrusteeConfig conditions')}</CardTitle>
+      <CardBody>
+        <DescriptionList isHorizontal isCompact>
+          {bad.map((c) => (
+            <DescriptionListGroup key={c.type}>
+              <DescriptionListTerm>
+                <Label color="orange" isCompact>
+                  {c.type}
+                </Label>
+              </DescriptionListTerm>
+              <DescriptionListDescription>
+                {c.reason && <strong>{c.reason}: </strong>}
+                {c.message ?? t('Status: {{status}}', { status: c.status })}
+              </DescriptionListDescription>
+            </DescriptionListGroup>
+          ))}
+        </DescriptionList>
+      </CardBody>
+    </Card>
   );
 };
 
@@ -153,6 +213,7 @@ const TrusteeHealthTab: FC<TrusteeTabProps> = ({ obj }) => {
   // KBS runs in the namespace the TrusteeConfig targets; the operator runs in its
   // own (operator) namespace. Fall back to the operator namespace if unset.
   const namespace = obj?.metadata?.namespace || TRUSTEE_NAMESPACE;
+  const conditions = obj?.status?.conditions;
 
   const [pods, podsLoaded, podsError] = useK8sWatchResource<PodKind[]>({
     groupVersionKind: PodGVK,
@@ -168,12 +229,18 @@ const TrusteeHealthTab: FC<TrusteeTabProps> = ({ obj }) => {
 
   return (
     <PageSection>
+      <ConditionsCard conditions={conditions} />
       <Card className="trustee-openshift-console-plugin__mb">
         <CardTitle>{t('Deployments')}</CardTitle>
         <CardBody>
           <DescriptionList isHorizontal isCompact>
-            <DeploymentHealth name={TRUSTEE_KBS_DEPLOYMENT} namespace={namespace} />
-            <DeploymentHealth name={TRUSTEE_OPERATOR_DEPLOYMENT} namespace={namespace} />
+            <DeploymentHealth name={TRUSTEE_KBS_DEPLOYMENT} namespace={namespace} pods={kbsPods} />
+            <DeploymentHealth
+              name={TRUSTEE_OPERATOR_DEPLOYMENT}
+              namespace={namespace}
+              pods={[]}
+              isOperator
+            />
           </DescriptionList>
         </CardBody>
       </Card>

@@ -129,7 +129,7 @@ export const useRemoteAttestations = (
           continue;
         if (!e.clientIp) continue;
         const ip = e.clientIp;
-        const s = byIp.get(ip) ?? {
+        const s: RemoteSpoke = byIp.get(ip) ?? {
           clientIp: ip,
           attests: 0,
           released: 0,

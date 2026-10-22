@@ -31,6 +31,8 @@ import {
 import { PlusCircleIcon } from '@patternfly/react-icons';
 import { KbsConfigGVK, KbsConfigModel, SecretGVK, SecretModel } from '../../k8s/resources';
 import type { KbsConfigKind, SecretKind } from '../../k8s/types';
+import { useCanCreateSecret } from '../../utils/rbac/useTrusteePermissions';
+import PermissionHint from '../../utils/rbac/PermissionHint';
 import type { TrusteeTabProps } from './types';
 import '../trustee.css';
 
@@ -207,6 +209,7 @@ const TrusteeSecretsTab: FC<TrusteeTabProps> = ({ obj }) => {
   const { t } = useTranslation('plugin__trustee-openshift-console-plugin');
   const name = obj?.metadata?.name;
   const namespace = obj?.metadata?.namespace ?? '';
+  const { allowed: canCreate, loading: rbacLoading } = useCanCreateSecret(namespace);
   const [modalOpen, setModalOpen] = useState(false);
 
   // The operator names generated resources from the TrusteeConfig, but the exact
@@ -278,12 +281,13 @@ const TrusteeSecretsTab: FC<TrusteeTabProps> = ({ obj }) => {
                 onClick={() => {
                   setModalOpen(true);
                 }}
-                isDisabled={!name}
+                isDisabled={!name || rbacLoading || !canCreate}
               >
                 {t('Create secret')}
               </Button>
             </FlexItem>
           </Flex>
+          <PermissionHint allowed={canCreate} loading={rbacLoading} />
         </CardTitle>
         <CardBody>
           <Alert

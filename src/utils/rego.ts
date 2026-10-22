@@ -120,3 +120,19 @@ export const validateRego = (text: string): string | undefined => {
   if (stack.length > 0) return `Unbalanced "${stack[stack.length - 1]}" — missing closing bracket.`;
   return undefined;
 };
+
+const DEFAULT_ALLOW_RE = /^\s*default\s+allow\s*=/m;
+
+/**
+ * Non-blocking warning for a Rego policy. Returns a warning string when the
+ * policy has no `default allow` rule — the most common cause of Trustee
+ * silently denying every attestation request. Returns undefined when ok.
+ */
+export const regoWarning = (text: string): string | undefined => {
+  const src = text.trim();
+  if (src === '') return undefined;
+  if (!DEFAULT_ALLOW_RE.test(src)) {
+    return 'No "default allow" rule found. Without it, Trustee silently denies every request. Add "default allow = true" (permissive) or "default allow = false" (restrictive) to set the baseline.';
+  }
+  return undefined;
+};

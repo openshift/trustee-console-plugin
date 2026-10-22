@@ -19,6 +19,9 @@ import { isConfidentialRuntimeName, isPeerPodRuntime, teeLong, teeTypeForNode } 
 
 export type Verdict = 'healthy' | 'failing' | 'no-attestation' | 'pending' | 'unknown';
 
+/** i18next TFunction — accepts a key and optional interpolation values. */
+export type TFn = (key: string, opts?: Record<string, unknown>) => string;
+
 export interface AttestWorkload {
   uid: string;
   name: string;
@@ -137,13 +140,13 @@ export const baselineVerdict = (w: AttestWorkload, ctx: AttestContext): Verdict 
   return 'unknown';
 };
 
-export const verdictLabel = (v: Verdict): string =>
+export const verdictLabel = (v: Verdict, t: TFn): string =>
   ({
-    healthy: 'Healthy',
-    failing: 'Failing',
-    'no-attestation': 'Not attesting',
-    pending: 'Pending',
-    unknown: 'Unknown',
+    healthy: t('Healthy'),
+    failing: t('Failing'),
+    'no-attestation': t('Not attesting'),
+    pending: t('Pending'),
+    unknown: t('Unknown'),
   })[v];
 
 export const verdictColor = (v: Verdict): 'green' | 'red' | 'orange' | 'blue' | 'grey' =>
@@ -155,47 +158,49 @@ export const verdictColor = (v: Verdict): 'green' | 'red' | 'orange' | 'blue' | 
     unknown: 'grey',
   })[v] as 'green' | 'red' | 'orange' | 'blue' | 'grey';
 
-export const buildChecks = (w: AttestWorkload, ctx: AttestContext): Check[] => [
+export const buildChecks = (w: AttestWorkload, ctx: AttestContext, t: TFn): Check[] => [
   {
     id: 'initdata',
-    label: 'Initdata',
+    label: t('Initdata'),
     state: w.hasInitData ? 'ok' : 'fail',
     detail: w.hasInitData
-      ? 'cc_init_data annotation present'
-      : 'No cc_init_data annotation — the guest boots without attesting to Trustee',
+      ? t('cc_init_data annotation present')
+      : t('No cc_init_data annotation — the guest boots without attesting to Trustee'),
   },
   {
     id: 'tee',
-    label: w.peerPod ? 'TEE' : 'TEE node',
+    label: w.peerPod ? t('TEE') : t('TEE node'),
     state: w.peerPod ? 'ok' : !w.nodeName ? 'unknown' : w.onTeeNode ? 'ok' : 'fail',
     detail: w.peerPod
-      ? 'Cloud Confidential VM (peer pod) — the TEE is the cloud VM, not a cluster node'
+      ? t('Cloud Confidential VM (peer pod) — the TEE is the cloud VM, not a cluster node')
       : !w.nodeName
-        ? 'Not scheduled to a node yet'
+        ? t('Not scheduled to a node yet')
         : w.onTeeNode
-          ? `${w.nodeName} · ${teeLong(w.tee)}`
-          : `${w.nodeName} has no TEE (TDX/SEV-SNP) node label`,
+          ? t('{{nodeName}} · {{teeName}}', { nodeName: w.nodeName, teeName: teeLong(w.tee) })
+          : t('{{nodeName}} has no TEE (TDX/SEV-SNP) node label', { nodeName: w.nodeName }),
   },
   {
     id: 'kbs',
-    label: 'Trustee KBS',
+    label: t('Trustee KBS'),
     state: ctx.kbsReady ? 'ok' : 'fail',
-    detail: ctx.kbsReady ? 'Reachable and ready' : 'KBS is not ready — no workload can attest',
+    detail: ctx.kbsReady
+      ? t('Reachable and ready')
+      : t('KBS is not ready — no workload can attest'),
   },
   {
     id: 'refvals',
-    label: 'Reference values',
+    label: t('Reference values'),
     state: ctx.referenceValuesPresent ? 'ok' : 'warn',
     detail: ctx.referenceValuesPresent
-      ? 'Registered in Trustee'
-      : 'None registered — attestation is rejected until you add them',
+      ? t('Registered in Trustee')
+      : t('None registered — attestation is rejected until you add them'),
   },
   {
     id: 'pod',
-    label: 'Pod',
+    label: t('Pod'),
     state: w.phase === 'Running' && w.ready ? 'ok' : w.containerIssue ? 'fail' : 'warn',
     detail:
-      w.containerIssue ?? `${w.phase}${w.phase === 'Running' && !w.ready ? ' · not ready' : ''}`,
+      w.containerIssue ?? (w.phase === 'Running' && !w.ready ? t('Running · not ready') : w.phase),
   },
 ];
 
@@ -233,52 +238,90 @@ export const hasBlockingEvent = (events: ProbeEvent[]): boolean =>
 export const cdhProbeCommand = (ns: string, name: string): string =>
   `oc exec -it ${name} -n ${ns} -- curl http://127.0.0.1:${CDH_RESOURCE_PROBE_PORT}/cdh/resource/default/attestation-status/status`;
 
-/** Concrete next actions, ordered by what's most likely blocking attestation. */
+const CERT_EVENT_RE = /certificate|tls|x509|expired|handshake/i;
+const NETWORK_EVENT_RE =
+  /connection refused|unreachable|connection timeout|dial timeout|dial|ECONNREFUSED|no route/i;
+
+/** Concrete next actions, ordered by what’s most likely blocking attestation. */
 export const remediation = (
   w: AttestWorkload,
   ctx: AttestContext,
   blockingEvent: boolean,
   links?: { referenceValues?: string; health?: string },
+  events?: ProbeEvent[],
+  t: TFn = (k) => k,
 ): Remediation[] => {
   const r: Remediation[] = [];
   if (!w.hasInitData) {
     r.push({
-      // Author initdata on this Trustee (the Initdata tab), then create the
-      // workload with it in the CoCo plugin. The old link to
-      // /confidential-containers/initdata 404'd — CoCo registers no such route;
-      // its create-workload form is where initdata is pasted.
-      text: 'This pod has no initdata, so it never contacts Trustee. Author initdata (Initdata tab), then rebuild the workload with it and redeploy.',
+      text: t(
+        'This pod has no initdata, so it never contacts Trustee. Author initdata (Initdata tab), then rebuild the workload with it and redeploy.',
+      ),
       href: COCO_CREATE_WORKLOAD_ROUTE,
       crossPlugin: true,
     });
   }
   if (w.nodeName && !w.onTeeNode) {
     r.push({
-      text: 'The pod is on a node without a hardware TEE. Schedule it on an Intel TDX or AMD SEV-SNP node.',
+      text: t(
+        'The pod is on a node without a hardware TEE. Schedule it on an Intel TDX or AMD SEV-SNP node.',
+      ),
       href: COCO_TEE_NODES_ROUTE,
       crossPlugin: true,
     });
   }
   if (!ctx.kbsReady) {
     r.push({
-      text: 'Trustee KBS is not ready. No workload can attest until it is — check Trustee health.',
+      text: t(
+        'Trustee KBS is not ready. No workload can attest until it is — check Trustee health.',
+      ),
       href: links?.health ?? '/trustee',
     });
   }
   if (!ctx.referenceValuesPresent) {
     r.push({
-      text: 'Trustee has no reference values. Register this workload’s PCR8 (from the initdata builder) under Reference values.',
+      text: t(
+        'Trustee has no reference values. Register this workload’s PCR8 (from the initdata builder) under Reference values.',
+      ),
       href: links?.referenceValues ?? '/trustee',
     });
   }
+
+  const hasCertEvent = events?.some(
+    (e) => CERT_EVENT_RE.test(e.message) || CERT_EVENT_RE.test(e.reason),
+  );
+  if (hasCertEvent && ctx.kbsReady) {
+    r.push({
+      text: t(
+        'A TLS or certificate error was detected in pod events. Check that the KBS TLS certificate has not expired and that the CA in the initdata matches the serving cert.',
+      ),
+      href: links?.health ?? '/trustee',
+    });
+  }
+
+  const hasNetworkEvent = events?.some(
+    (e) => NETWORK_EVENT_RE.test(e.message) || NETWORK_EVENT_RE.test(e.reason),
+  );
+  if (hasNetworkEvent && w.hasInitData && ctx.kbsReady) {
+    r.push({
+      text: t(
+        'The pod cannot reach the KBS. Verify the KBS URL in the initdata is correct and that network policies or firewalls are not blocking egress from the workload namespace.',
+      ),
+    });
+  }
+
   if (w.hasInitData && w.onTeeNode && ctx.kbsReady && (blockingEvent || w.phase !== 'Running')) {
     r.push({
-      text: 'Evidence may not match Trustee’s reference values or policy. Re-register the PCR8 for this exact initdata and review the attestation policy.',
+      text: t(
+        'Evidence may not match Trustee’s reference values or policy. Re-register the PCR8 for this exact initdata and review the attestation policy.',
+      ),
       href: links?.referenceValues ?? '/trustee',
     });
   }
   r.push({
-    text: 'Run the definitive in-guest check from a terminal (a success response confirms Trustee released the secret):',
+    text: t(
+      'Run the definitive in-guest check from a terminal (a success response confirms Trustee released the secret):',
+    ),
     cdhCommand: true,
   });
   return r;

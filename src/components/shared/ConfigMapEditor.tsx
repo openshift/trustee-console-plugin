@@ -17,6 +17,7 @@ import {
 } from '@patternfly/react-core';
 import { ConfigMapGVK, ConfigMapModel } from '../../k8s/resources';
 import type { ConfigMapKind } from '../../k8s/types';
+import PermissionHint from '../../utils/rbac/PermissionHint';
 import '../trustee.css';
 
 interface Props {
@@ -33,6 +34,10 @@ interface Props {
    * Returns an error message to block the patch, or undefined when valid.
    */
   validate?: (draft: string) => string | undefined;
+  /** Non-blocking warning check. Returns a warning string or undefined. Shown as an info alert; does not block save. */
+  warn?: (draft: string) => string | undefined;
+  /** When false, the editor is read-only: Save/Reset/Template are disabled and the TextArea cannot be edited. */
+  editable?: boolean;
 }
 
 /**
@@ -49,6 +54,8 @@ const ConfigMapEditor: FC<Props> = ({
   preferredKey,
   templates,
   validate,
+  warn,
+  editable = true,
 }) => {
   const { t } = useTranslation('plugin__trustee-openshift-console-plugin');
   const [configMap, loaded, loadError] = useK8sWatchResource<ConfigMapKind>({
@@ -88,6 +95,7 @@ const ConfigMapEditor: FC<Props> = ({
   // Live validation error (when a validator is provided) — drives the inline
   // message and disables Save so an invalid policy is never patched.
   const validationError = validate && dirty ? validate(draft) : undefined;
+  const warningText = warn && dirty && !validationError ? warn(draft) : undefined;
 
   const onSave = async () => {
     if (!configMap) return;
@@ -171,6 +179,7 @@ const ConfigMapEditor: FC<Props> = ({
                 ))}
               </FormSelect>
             )}
+            <PermissionHint allowed={editable} />
             {templates && templates.length > 0 && (
               <Flex
                 gap={{ default: 'gapSm' }}
@@ -186,6 +195,7 @@ const ConfigMapEditor: FC<Props> = ({
                   <FlexItem key={tpl.id}>
                     <Button
                       variant="secondary"
+                      isDisabled={!editable}
                       onClick={() => {
                         setDraft(tpl.value);
                         setDirty(true);
@@ -203,6 +213,7 @@ const ConfigMapEditor: FC<Props> = ({
                 setDraft(value);
                 setDirty(true);
               }}
+              isDisabled={!editable}
               aria-label={`${title} ${resolvedKey}`}
               rows={16}
               resizeOrientation="vertical"
@@ -214,6 +225,15 @@ const ConfigMapEditor: FC<Props> = ({
                 isInline
                 isPlain
                 title={validationError}
+                className="trustee-openshift-console-plugin__mt"
+              />
+            )}
+            {warningText && (
+              <Alert
+                variant="info"
+                isInline
+                isPlain
+                title={t(warningText)}
                 className="trustee-openshift-console-plugin__mt"
               />
             )}
@@ -232,7 +252,7 @@ const ConfigMapEditor: FC<Props> = ({
                 <Button
                   variant="primary"
                   onClick={() => void onSave()}
-                  isDisabled={!dirty || saving || Boolean(validationError)}
+                  isDisabled={!dirty || saving || Boolean(validationError) || !editable}
                   isLoading={saving}
                 >
                   {t('Save')}
@@ -241,7 +261,7 @@ const ConfigMapEditor: FC<Props> = ({
               <FlexItem>
                 <Button
                   variant="link"
-                  isDisabled={!dirty || saving}
+                  isDisabled={!dirty || saving || !editable}
                   onClick={() => {
                     setDraft(configMap?.data?.[resolvedKey] ?? '');
                     setDirty(false);

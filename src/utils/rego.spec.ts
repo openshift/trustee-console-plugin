@@ -3,6 +3,7 @@ import {
   RESTRICTED_ATTESTATION_POLICY,
   RESTRICTED_RESOURCE_POLICY,
   regoTemplatesForPolicy,
+  regoWarning,
   validateRego,
 } from './rego';
 
@@ -48,6 +49,31 @@ default msg = "a string with } and { inside"
 
   it('handles escaped quotes inside strings', () => {
     expect(validateRego('package policy\nx = "a \\" quote"\n')).toBeUndefined();
+  });
+});
+
+describe('regoWarning', () => {
+  it('returns undefined for shipped templates (all have default allow)', () => {
+    expect(regoWarning(PERMISSIVE_RESOURCE_POLICY)).toBeUndefined();
+    expect(regoWarning(RESTRICTED_RESOURCE_POLICY)).toBeUndefined();
+    expect(regoWarning(RESTRICTED_ATTESTATION_POLICY)).toBeUndefined();
+  });
+
+  it('warns when no default allow rule is present', () => {
+    const policy = 'package policy\nallow { input.ok == true }\n';
+    expect(regoWarning(policy)).toMatch(/default allow/i);
+  });
+
+  it('accepts default allow = true', () => {
+    expect(regoWarning('package policy\ndefault allow = true\n')).toBeUndefined();
+  });
+
+  it('accepts default allow = false', () => {
+    expect(regoWarning('package policy\ndefault allow = false\n')).toBeUndefined();
+  });
+
+  it('returns undefined for empty input (no false positive)', () => {
+    expect(regoWarning('')).toBeUndefined();
   });
 });
 
