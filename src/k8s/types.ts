@@ -136,7 +136,8 @@ export type KbsConfigKind = K8sResourceCommon & {
   spec?: {
     kbsServiceType?: string;
     kbsSecretResources?: string[];
-    kbsDeploymentSpec?: {
+    /** Trustee deployment options; capital-K json tag per the operator's CRD. */
+    KbsDeploymentSpec?: {
       replicas?: number;
     };
     /** Local certificate cache settings (advanced); shape is opaque here. */

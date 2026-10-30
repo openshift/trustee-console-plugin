@@ -1,5 +1,10 @@
 import { buildReadiness, findKbsRoute, type ReadinessCheck } from './readiness';
-import { KBS_SERVICE_NAME, RVPS_REFERENCE_VALUES_KEY } from '../k8s/resources';
+import {
+  KBS_SERVICE_NAME,
+  RVPS_REFERENCE_VALUES_KEY,
+  RVPS_REFERENCE_VALUES_LEGACY_KEY,
+} from '../k8s/resources';
+import { encodeReferenceValue } from './referenceValues';
 import type { ConfigMapKind, RouteKind, TrusteeConfigKind } from '../k8s/types';
 
 const labels = {
@@ -19,9 +24,9 @@ const kbsRoute = (host: string | undefined, admittedHost?: string): RouteKind =>
   status: admittedHost ? { ingress: [{ host: admittedHost }] } : { ingress: [] },
 });
 
-const rvCm = (json: string): ConfigMapKind => ({
+const rvCm = (json: string, key: string = RVPS_REFERENCE_VALUES_KEY): ConfigMapKind => ({
   metadata: { name: 'tc-rvps-reference-values' },
-  data: { [RVPS_REFERENCE_VALUES_KEY]: json },
+  data: { [key]: json },
 });
 
 const check = (checks: ReadinessCheck[], id: ReadinessCheck['id']): ReadinessCheck => {
@@ -100,13 +105,44 @@ describe('buildReadiness', () => {
   });
 
   it('warns when reference values are empty and ok when present', () => {
-    const empty = buildReadiness({ tc: readyTc, routes: [], rvpsCm: rvCm('[]') }, labels);
+    const empty = buildReadiness({ tc: readyTc, routes: [], rvpsCm: rvCm('{}') }, labels);
     expect(check(empty, 'refvals').state).toBe('warn');
 
+    // Operator ≥ v1.2 format: reference_value map of base64-encoded entries.
     const present = buildReadiness(
-      { tc: readyTc, routes: [], rvpsCm: rvCm('[{"name":"init_data"}]') },
+      {
+        tc: readyTc,
+        routes: [],
+        rvpsCm: rvCm(
+          JSON.stringify({
+            init_data: encodeReferenceValue({
+              name: 'init_data',
+              expiration: '2099-12-31T00:00:00Z',
+              value: ['abc'],
+            }),
+          }),
+        ),
+      },
       labels,
     );
     expect(check(present, 'refvals')).toMatchObject({ state: 'ok', detail: 'refvals-present' });
+  });
+
+  it('accepts the legacy reference-values.json key (operator ≤ v1.1 skew)', () => {
+    const present = buildReadiness(
+      {
+        tc: readyTc,
+        routes: [],
+        rvpsCm: rvCm(JSON.stringify([{ name: 'init_data' }]), RVPS_REFERENCE_VALUES_LEGACY_KEY),
+      },
+      labels,
+    );
+    expect(check(present, 'refvals').state).toBe('ok');
+
+    const empty = buildReadiness(
+      { tc: readyTc, routes: [], rvpsCm: rvCm('[]', RVPS_REFERENCE_VALUES_LEGACY_KEY) },
+      labels,
+    );
+    expect(check(empty, 'refvals').state).toBe('warn');
   });
 });

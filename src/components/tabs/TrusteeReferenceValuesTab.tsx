@@ -23,6 +23,7 @@ import {
   NodeGVK,
   OSC_NAMESPACE,
   PEER_PODS_CM,
+  RVPS_REFERENCE_VALUES_KEY,
 } from '../../k8s/resources';
 import type { ConfigMapKind, NodeKind } from '../../k8s/types';
 import { cvmPeerPodsEnabled, detectClusterTee } from '../../utils/topology';
@@ -111,7 +112,7 @@ const TrusteeReferenceValuesTab: FC<TrusteeTabProps> = ({ obj }) => {
         >
           <Content component="p">
             {t(
-              'On cloud (peer pods) the workload runs in a cloud Confidential VM, so there are no per-node host measurements to generate with veritas. The reference value to register is the initdata vTPM PCR 8 — author it in the Initdata tab and click “Add to reference values”. Edit reference-values.json directly below if you need to.',
+              'On cloud (peer pods) the workload runs in a cloud Confidential VM, so there are no per-node host measurements to generate with veritas. The reference value to register is the initdata vTPM PCR 8 — author it in the Initdata tab and click “Add to reference values”. Edit the reference_value data key directly below if you need to.',
             )}
           </Content>
         </Alert>
@@ -125,7 +126,7 @@ const TrusteeReferenceValuesTab: FC<TrusteeTabProps> = ({ obj }) => {
         >
           <Content component="p">
             {t(
-              'reference-values.json is empty by default. Generate it for your TEE platform with the veritas tool, then re-import it here. Regenerate and re-apply it after any TEE firmware, OpenShift, or OpenShift sandboxed containers (OSC) upgrade — those change the expected measurements. Generating replaces the whole reference-values.json, so back up any manually-registered values (e.g. an initdata init_data entry) first.',
+              'The reference_value key is empty by default. Generate it for your TEE platform with the veritas tool, then re-import it here. Regenerate and re-apply it after any TEE firmware, OpenShift, or OpenShift sandboxed containers (OSC) upgrade — those change the expected measurements. Generating merges into reference_value: values under other names (e.g. an initdata init_data entry) are kept, and only same-name entries are refreshed.',
             )}
           </Content>
           <Flex
@@ -193,7 +194,7 @@ const TrusteeReferenceValuesTab: FC<TrusteeTabProps> = ({ obj }) => {
         description={t(
           'Expected measurement values the Reference Value Provider Service checks against TEE evidence — including the PCR8 hash produced by the initdata builder.',
         )}
-        preferredKey="reference-values.json"
+        preferredKey={RVPS_REFERENCE_VALUES_KEY}
         editable={!rbacLoading && canPatch}
       />
     </PageSection>

@@ -123,7 +123,7 @@ const TrusteeActivity: FC = () => {
           <Card>
             <CardBody>
               <span className={`${PREFIX}__muted`}>
-                {t('No running KBS pod found in {{ns}}.', { ns: hubNs })}
+                {t('No running KBS pod found in {{nsName}}.', { nsName: hubNs })}
               </span>
             </CardBody>
           </Card>

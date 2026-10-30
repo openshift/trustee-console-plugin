@@ -45,7 +45,6 @@ import {
   OSC_NAMESPACE,
   PEER_PODS_CM,
   PodGVK,
-  RVPS_REFERENCE_VALUES_KEY,
   RVPS_REFERENCE_VALUES_SUFFIX,
   TRUSTEE_NAMESPACE,
   TrusteeConfigModelRef,
@@ -66,6 +65,7 @@ import {
   type Verdict,
 } from '../utils/attestation';
 import { cvmPeerPodsEnabled, teeShort } from '../utils/topology';
+import { referenceValuesPopulated } from '../utils/referenceValues';
 import { COCO_KATACONFIG_FLAG, cocoRoutesPresent } from '../utils/crossPlugin';
 import {
   decodeJwt,
@@ -85,19 +85,11 @@ const isReady = (tc?: TrusteeConfigKind): boolean =>
     (tc.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'));
 
 const referenceValuesPresent = (cms: ConfigMapKind[]): boolean =>
-  cms.some((cm) => {
-    if (!cm.metadata?.name?.endsWith(RVPS_REFERENCE_VALUES_SUFFIX)) return false;
-    const raw = cm.data?.[RVPS_REFERENCE_VALUES_KEY];
-    if (!raw) return false;
-    try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed.length > 0;
-      if (parsed && typeof parsed === 'object') return Object.keys(parsed).length > 0;
-      return false;
-    } catch {
-      return raw.trim().length > 2;
-    }
-  });
+  cms.some(
+    (cm) =>
+      cm.metadata?.name?.endsWith(RVPS_REFERENCE_VALUES_SUFFIX) &&
+      referenceValuesPopulated(cm.data),
+  );
 
 const CheckRowIcon: FC<{ state: Check['state'] }> = ({ state }) => {
   if (state === 'ok') return <CheckCircleIcon className={`${PREFIX}__icon-success`} />;

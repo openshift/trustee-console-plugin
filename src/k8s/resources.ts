@@ -230,7 +230,18 @@ export const KBS_SERVICE_NAME = 'kbs-service';
 export const KBS_SERVICE_PORT = 8080;
 /** Operator-generated ConfigMap holding RVPS reference values: <name>-rvps-reference-values. */
 export const RVPS_REFERENCE_VALUES_SUFFIX = '-rvps-reference-values';
-export const RVPS_REFERENCE_VALUES_KEY = 'reference-values.json';
+/**
+ * Data key the Trustee operator (v1.2.0+) writes and subPath-mounts into RVPS
+ * storage: a map of reference-value name → URL-safe-base64 JSON. See
+ * src/utils/referenceValues.ts for the full format.
+ */
+export const RVPS_REFERENCE_VALUES_KEY = 'reference_value';
+/**
+ * Data key operator ≤ v1.1 used for the same ConfigMap (a plain JSON array).
+ * Read-only tolerance for operator skew — writes target RVPS_REFERENCE_VALUES_KEY;
+ * a present legacy key is kept in sync by registerReferenceValue.
+ */
+export const RVPS_REFERENCE_VALUES_LEGACY_KEY = 'reference-values.json';
 /** Confidential Data Hub port inside the guest — the in-VM attestation probe target. */
 export const CDH_RESOURCE_PROBE_PORT = 8006;
 // Default RVPS reference-value name for the bare-metal TDX initdata measurement. The cloud

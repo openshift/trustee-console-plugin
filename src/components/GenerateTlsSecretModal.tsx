@@ -243,9 +243,12 @@ const GenerateTlsSecretModal: FC<Props> = ({
               <HelperText>
                 <HelperTextItem variant={secretValid ? 'default' : 'error'}>
                   {secretValid
-                    ? t('Created in the {{ns}} namespace; referenced as the HTTPS TLS secret.', {
-                        ns: namespace,
-                      })
+                    ? t(
+                        'Created in the {{nsName}} namespace; referenced as the HTTPS TLS secret.',
+                        {
+                          nsName: namespace,
+                        },
+                      )
                     : t('Must be a lowercase DNS name (a–z, 0–9, -).')}
                 </HelperTextItem>
               </HelperText>
@@ -292,7 +295,7 @@ const GenerateTlsSecretModal: FC<Props> = ({
           )}
           {failed && (
             <Alert variant="danger" isInline title={t('The generator Job failed')}>
-              {t('Check the Job {{job}} in {{ns}} for details.', { job: P, ns: namespace })}
+              {t('Check the Job {{job}} in {{nsName}} for details.', { job: P, nsName: namespace })}
             </Alert>
           )}
           {error && (
