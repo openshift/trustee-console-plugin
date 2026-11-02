@@ -15,13 +15,20 @@ RUN LOCAL_YARN="node $(awk '/yarnPath:/{print $2}' .yarnrc.yml)" && \
 
 # RHEL 9 nginx with OpenSSL 3.5 (ML-KEM), so the chart's PQC ssl_ecdh_curve defaults work.
 FROM registry.access.redhat.com/ubi9/nginx-126:latest
+# The Trustee operator (and this repo's Helm chart) render nginx.conf with
+# `root /usr/share/nginx/html`, a directory owned by the nginx RPM. Serve the
+# build from there by adding files only: deleting or replacing RPM-installed
+# files (e.g. turning the directory into a symlink) fails the Konflux
+# ecosystem-cert-preflight-checks HasModifiedFiles check, which EC enforces.
+COPY --from=build-main /usr/src/app/dist /usr/share/nginx/html/
+# /builds keeps the per-release layout the entrypoint selects via OCP_VERSION.
 COPY --from=build-main /usr/src/app/dist /builds/main
 COPY entrypoint.sh /entrypoint.sh
+# EC certification requires licensing information in /licenses.
+COPY LICENSE /licenses/LICENSE
 
 USER root
 RUN chmod +x /entrypoint.sh && \
-    rm -rf /usr/share/nginx/html && \
-    ln -s /tmp/nginx/html /usr/share/nginx/html && \
     mkdir -p /tmp/nginx && \
     chgrp -R 0 /tmp/nginx /builds && \
     chmod -R g=u /tmp/nginx /builds
