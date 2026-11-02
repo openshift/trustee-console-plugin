@@ -26,8 +26,10 @@ const catalog: Record<string, string> = JSON.parse(
 // The destructured useTranslation `t` called with a single-quoted literal key
 // (not .get(…), .split(…), etc. — the lookbehind excludes member calls).
 const tCall = /(?<![A-Za-z0-9_$.])t\(\s*'((?:[^'\\]|\\.)*)'/g;
-// t('literal', { … ns: … }) — the reserved i18next namespace option used as an
-// interpolation value. Options objects passed to t() are flat.
+// t(key, { … ns: … }) — the reserved i18next namespace option used as an
+// interpolation value. Options objects passed to t() are flat. (The `t(` + quoted
+// form above is deliberately avoided here: i18next-parser scans comments too and
+// would extract the sample key into the catalog.)
 const reservedNsOption = /(?<![A-Za-z0-9_$.])t\(\s*'(?:[^'\\]|\\.)*'\s*,\s*\{[^{}]*?\bns\s*:/;
 
 const resolvesThroughCatalog = (key: string): boolean =>

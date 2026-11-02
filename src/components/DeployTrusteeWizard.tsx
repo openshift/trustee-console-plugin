@@ -496,6 +496,7 @@ const DeployTrusteeWizard: FC = () => {
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [tlsModalOpen, setTlsModalOpen] = useState(false);
+  const [tokenModalOpen, setTokenModalOpen] = useState(false);
   const [createdRef, setCreatedRef] = useState<{ name: string; namespace: string } | undefined>();
 
   // Cluster apps domain — offered as a SAN so generated certs also cover Routes.
@@ -507,7 +508,11 @@ const DeployTrusteeWizard: FC = () => {
 
   const restricted = profileType === 'Restricted';
   const httpsRequiredMissing = restricted && httpsSecret.trim() === '';
-  const valid = name.trim() !== '' && namespace.trim() !== '' && !httpsRequiredMissing;
+  // The Restricted profile verifies the attestation token KBS issues, so it needs a
+  // signing key/cert. Permissive accepts the evidence as-is, so the secret is optional.
+  const tokenRequiredMissing = restricted && tokenSecret.trim() === '';
+  const valid =
+    name.trim() !== '' && namespace.trim() !== '' && !httpsRequiredMissing && !tokenRequiredMissing;
   const nameExists = existing.some(
     (e) => e.metadata?.name === name.trim() && e.metadata?.namespace === namespace.trim(),
   );
@@ -529,6 +534,45 @@ const DeployTrusteeWizard: FC = () => {
     `openssl req -x509 -newkey rsa:2048 -nodes -keyout tls.key -out tls.crt -subj '/CN=kbs' -days 365`,
     `# load it as the TLS secret referenced above`,
     `oc create secret tls ${httpsSecret.trim() || '<tls-secret-name>'} --cert=tls.crt --key=tls.key -n ${namespace.trim() || '<namespace>'}`,
+  ].join('\n');
+
+  // Attestation-token signing secret: cert-manager (as in the Trustee docs) or a
+  // plain openssl flow for clusters without cert-manager. KBS needs an ECDSA P-256
+  // key in PKCS8; the operator copies tls.key/tls.crt out of this kubernetes.io/tls
+  // Secret into the KbsConfig's attestation key/cert secrets.
+  const tokenSecretCmd = [
+    `# Option A — cert-manager (self-signed ECDSA P-256 key in PKCS8)`,
+    `oc apply -f - <<EOF`,
+    `apiVersion: cert-manager.io/v1`,
+    `kind: Issuer`,
+    `metadata:`,
+    `  name: kbs-token-issuer`,
+    `  namespace: ${namespace.trim() || '<namespace>'}`,
+    `spec:`,
+    `  selfSigned: {}`,
+    `---`,
+    `apiVersion: cert-manager.io/v1`,
+    `kind: Certificate`,
+    `metadata:`,
+    `  name: kbs-token`,
+    `  namespace: ${namespace.trim() || '<namespace>'}`,
+    `spec:`,
+    `  dnsNames:`,
+    `    - kbs-service`,
+    `  secretName: ${tokenSecret.trim() || '<token-secret-name>'}`,
+    `  issuerRef:`,
+    `    name: kbs-token-issuer`,
+    `  privateKey:`,
+    `    algorithm: ECDSA`,
+    `    encoding: PKCS8`,
+    `    size: 256`,
+    `EOF`,
+    ``,
+    `# Option B — without cert-manager: openssl + oc create secret tls`,
+    `openssl ecparam -name prime256v1 -genkey -noout -out ec.key`,
+    `openssl pkcs8 -topk8 -nocrypt -in ec.key -out token.key`,
+    `openssl req -new -x509 -key token.key -sha256 -days 365 -subj '/CN=kbs-token' -addext 'subjectAltName=DNS:kbs-service' -out token.crt`,
+    `oc create secret tls ${tokenSecret.trim() || '<token-secret-name>'} --cert=token.crt --key=token.key -n ${namespace.trim() || '<namespace>'}`,
   ].join('\n');
 
   const yaml = [
@@ -644,6 +688,11 @@ const DeployTrusteeWizard: FC = () => {
               <Content component="li">
                 {t(
                   'For production, plan a Restricted profile with an HTTPS TLS secret (you can generate one below).',
+                )}
+              </Content>
+              <Content component="li">
+                {t(
+                  'For the Restricted profile, plan an attestation token signing secret (kubernetes.io/tls) — generate one below, or create it with cert-manager or openssl.',
                 )}
               </Content>
             </Content>
@@ -925,25 +974,76 @@ const DeployTrusteeWizard: FC = () => {
                     )}
                   </FormGroup>
                   <FormGroup
-                    label={t('Attestation token verification secret (optional)')}
+                    label={t('Attestation token TLS secret')}
+                    isRequired={restricted}
                     fieldId="tc-token"
                   >
                     <TextInput
                       id="tc-token"
                       value={tokenSecret}
+                      validated={tokenRequiredMissing ? 'error' : 'default'}
                       onChange={(_e, v) => {
                         setTokenSecret(v);
                       }}
+                      placeholder={restricted ? t('Required for Restricted') : t('Optional')}
                     />
                     <FormHelperText>
                       <HelperText>
-                        <HelperTextItem>
+                        <HelperTextItem variant={tokenRequiredMissing ? 'error' : 'default'}>
                           {t(
-                            'Optional TLS secret used to verify attestation tokens issued by KBS.',
+                            'kubernetes.io/tls secret (tls.crt + tls.key) that KBS uses to sign and verify attestation tokens. Required for the Restricted profile, which verifies the token before releasing secrets; optional for Permissive.',
                           )}
                         </HelperTextItem>
                       </HelperText>
                     </FormHelperText>
+                    <Button
+                      variant="secondary"
+                      className="trustee-openshift-console-plugin__mt"
+                      isDisabled={namespace.trim() === ''}
+                      onClick={() => {
+                        setTokenModalOpen(true);
+                      }}
+                    >
+                      {t('Generate attestation token secret')}
+                    </Button>
+                    <ExpandableSection
+                      toggleText={t('Understand attestation tokens or create the secret manually')}
+                      className="trustee-openshift-console-plugin__mt"
+                    >
+                      <Content
+                        component="p"
+                        className="trustee-openshift-console-plugin__mb trustee-openshift-console-plugin__muted"
+                      >
+                        {t(
+                          'After a workload proves its TEE evidence matches the reference values, KBS signs a short-lived attestation token that the workload reuses for secret requests until it expires. The Restricted profile verifies that token, and the key and certificate in this secret are what make it unforgeable — without them, a malicious pod could mint its own token and bypass attestation. Permissive does not verify the token, so this secret is optional there. The operator copies tls.key and tls.crt into the KbsConfig’s attestation key and certificate secrets.',
+                        )}
+                      </Content>
+                      <Content
+                        component="p"
+                        className="trustee-openshift-console-plugin__mb trustee-openshift-console-plugin__muted"
+                      >
+                        {t(
+                          'KBS needs an ECDSA P-256 private key in PKCS8. Create the secret with cert-manager (as in the Trustee docs) or with openssl:',
+                        )}
+                      </Content>
+                      <CodeBlock>
+                        <CodeBlockCode>{tokenSecretCmd}</CodeBlockCode>
+                      </CodeBlock>
+                    </ExpandableSection>
+                    {tokenModalOpen && (
+                      <GenerateTlsSecretModal
+                        purpose="token"
+                        trusteeConfigName={name}
+                        namespace={namespace.trim() || TRUSTEE_NAMESPACE}
+                        ingressDomain={ingressDomain}
+                        onCreated={(s) => {
+                          setTokenSecret(s);
+                        }}
+                        onClose={() => {
+                          setTokenModalOpen(false);
+                        }}
+                      />
+                    )}
                   </FormGroup>
 
                   {/*
