@@ -10,7 +10,8 @@
 // Pure logic (no React) so it's unit-testable; components pass the watched
 // resources in.
 // ---------------------------------------------------------------------------
-import { KBS_SERVICE_NAME, RVPS_REFERENCE_VALUES_KEY } from '../k8s/resources';
+import { KBS_SERVICE_NAME } from '../k8s/resources';
+import { referenceValuesPopulated } from './referenceValues';
 import type { ConfigMapKind, RouteKind, TrusteeConfigKind } from '../k8s/types';
 
 export type ReadyState = 'ok' | 'warn' | 'pending';
@@ -44,10 +45,7 @@ export const findKbsRoute = (
 const routeAdmitted = (route?: RouteKind): boolean =>
   !!route && (route.status?.ingress ?? []).some((i) => !!i.host);
 
-const rvpsPresent = (cm?: ConfigMapKind): boolean => {
-  const raw = (cm?.data?.[RVPS_REFERENCE_VALUES_KEY] ?? '').trim();
-  return raw !== '' && raw !== '[]' && raw !== '{}';
-};
+const rvpsPresent = (cm?: ConfigMapKind): boolean => referenceValuesPopulated(cm?.data);
 
 /**
  * Build the readiness checks. `kbsRouteRequired` lets the caller treat a missing

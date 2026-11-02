@@ -1,7 +1,0 @@
-{
-  "A TrusteeConfig named {{name}} already exists in {{ns}} — rename to create another.": "A TrusteeConfig named {{name}} already exists in {{ns}} — rename to create another.",
-  "Check the Job {{job}} in {{ns}} for details.": "Check the Job {{job}} in {{ns}} for details.",
-  "Created in the {{ns}} namespace; referenced as the HTTPS TLS secret.": "Created in the {{ns}} namespace; referenced as the HTTPS TLS secret.",
-  "If the pod logs show a pull-secret / unauthorized error, copy the cluster pull secret into {{ns}} and retry:": "If the pod logs show a pull-secret / unauthorized error, copy the cluster pull secret into {{ns}} and retry:",
-  "Opaque Secret created in namespace {{ns}}.": "Opaque Secret created in namespace {{ns}}."
-}

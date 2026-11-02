@@ -64,6 +64,12 @@ import {
   type MeasurementPlatform,
   type SensitiveRequest,
 } from '../../utils/initdata';
+import {
+  REFERENCE_VALUE_VERSION,
+  registerReferenceValue,
+  serializeReferenceValuesMap,
+  type ReferenceValueEntry,
+} from '../../utils/referenceValues';
 import { SavedInitdataPanel } from './SavedInitdataPanel';
 import {
   buildKbsHttpRoute,
@@ -93,6 +99,9 @@ const DEFAULT_ALLOW: Record<SensitiveRequest, boolean> = {
 
 const isNotFound = (e: unknown): boolean =>
   /not found|notfound|404/i.test(e instanceof Error ? e.message : String(e));
+
+const isAlreadyExists = (e: unknown): boolean =>
+  /already exists|409/i.test(e instanceof Error ? e.message : String(e));
 
 /**
  * Author the initdata on the Trustee side: generate it, register its PCR8 in the
@@ -321,62 +330,70 @@ const TrusteeInitdataTab: FC<TrusteeTabProps> = ({ obj }) => {
     // Register under the platform-appropriate reference-value name: init_data for bare-metal
     // TDX, the vTPM PCR-8 name for cloud peer pods (#21). The name is user-editable.
     const rvName = refvalName.trim() || MEASUREMENT_PLATFORMS[result.platform].refvalName;
-    const entry = {
+    const entry: ReferenceValueEntry = {
+      version: REFERENCE_VALUE_VERSION,
       name: rvName,
       expiration: '2099-12-31T00:00:00Z',
       value: [result.measurement],
     };
+    // The patch guards on the ConfigMap's resourceVersion (see
+    // registerReferenceValue), so a concurrent write rejects it instead of
+    // silently losing one side. On conflict (or a racing creation), re-read and
+    // merge again — a bounded number of times before surfacing the error.
+    const MAX_WRITE_ATTEMPTS = 3;
     try {
-      let cm: ConfigMapKind | undefined;
-      try {
-        cm = await k8sGet<ConfigMapKind>({
-          model: ConfigMapModel,
-          name: rvCmName,
-          ns: namespace,
-        });
-      } catch (e) {
-        // The operator normally creates this RVPS ConfigMap when the TrusteeConfig
-        // reconciles, but on a fresh deployment it may not exist yet. Rather than
-        // fail silently, create it with just this initdata's PCR8 so attestation
-        // can accept the workload now; reference values can be regenerated later.
-        if (!isNotFound(e)) throw e;
-      }
+      for (let attempt = 1; ; attempt++) {
+        let cm: ConfigMapKind | undefined;
+        try {
+          cm = await k8sGet<ConfigMapKind>({
+            model: ConfigMapModel,
+            name: rvCmName,
+            ns: namespace,
+          });
+        } catch (e) {
+          // The operator normally creates this RVPS ConfigMap when the TrusteeConfig
+          // reconciles, but on a fresh deployment it may not exist yet. Rather than
+          // fail silently, create it with just this initdata's PCR8 so attestation
+          // can accept the workload now; reference values can be regenerated later.
+          if (!isNotFound(e)) throw e;
+        }
 
-      if (!cm) {
-        const fresh: ConfigMapKind = {
-          apiVersion: 'v1',
-          kind: 'ConfigMap',
-          metadata: { name: rvCmName, namespace },
-          data: { [RVPS_REFERENCE_VALUES_KEY]: JSON.stringify([entry], null, 2) },
-        };
-        await k8sCreate({ model: ConfigMapModel, data: fresh });
-        setRvStatus('created');
-        return;
-      }
+        if (!cm) {
+          const fresh: ConfigMapKind = {
+            apiVersion: 'v1',
+            kind: 'ConfigMap',
+            metadata: { name: rvCmName, namespace },
+            data: { [RVPS_REFERENCE_VALUES_KEY]: serializeReferenceValuesMap({ [rvName]: entry }) },
+          };
+          try {
+            await k8sCreate({ model: ConfigMapModel, data: fresh });
+            setRvStatus('created');
+            return;
+          } catch (e) {
+            // Someone created it between our read and the create — merge into it.
+            if (!isAlreadyExists(e) || attempt === MAX_WRITE_ATTEMPTS) throw e;
+            continue;
+          }
+        }
 
-      let arr: { name?: string; expiration?: string; value?: string[] }[] = [];
-      try {
-        const parsed = JSON.parse(cm.data?.[RVPS_REFERENCE_VALUES_KEY] ?? '[]');
-        if (Array.isArray(parsed)) arr = parsed;
-      } catch {
-        arr = [];
+        // Merge into the ConfigMap's `reference_value` key (the one the operator
+        // subPath-mounts into RVPS storage) — never a wholesale replace, so values
+        // registered elsewhere survive. A legacy `reference-values.json` key
+        // (operator ≤ v1.1) is read, carried over, and kept in sync; a canonical
+        // key the plugin can't parse aborts the write rather than clobbering it.
+        // See utils/referenceValues.ts.
+        try {
+          await k8sPatch({
+            model: ConfigMapModel,
+            resource: cm,
+            data: registerReferenceValue(cm, entry),
+          });
+          setRvStatus('ok');
+          return;
+        } catch (e) {
+          if (attempt === MAX_WRITE_ATTEMPTS) throw e;
+        }
       }
-      const idx = arr.findIndex((e) => e?.name === rvName);
-      if (idx >= 0) arr[idx] = entry;
-      else arr.push(entry);
-      // `add` (not `replace`) so it works whether or not the key already exists.
-      await k8sPatch({
-        model: ConfigMapModel,
-        resource: cm,
-        data: [
-          {
-            op: 'add',
-            path: '/data/reference-values.json',
-            value: JSON.stringify(arr, null, 2),
-          },
-        ],
-      });
-      setRvStatus('ok');
     } catch (e) {
       setRvStatus(`error:${e instanceof Error ? e.message : String(e)}`);
     }

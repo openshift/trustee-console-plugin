@@ -79,7 +79,7 @@ const CreatePccsSecretModal: FC<Props> = ({ namespace, onCreated, onClose }) => 
             <FormHelperText>
               <HelperText>
                 <HelperTextItem>
-                  {t('Opaque Secret created in namespace {{ns}}.', { ns: namespace })}
+                  {t('Opaque Secret created in namespace {{nsName}}.', { nsName: namespace })}
                 </HelperTextItem>
               </HelperText>
             </FormHelperText>

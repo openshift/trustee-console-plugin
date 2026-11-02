@@ -60,6 +60,7 @@ import {
 import type { ConfigMapKind, DeploymentKind, RouteKind, TrusteeConfigKind } from '../k8s/types';
 import { findKbsRoute } from '../utils/readiness';
 import { INITDATA_REFVAL_NAMES } from '../utils/initdata';
+import { referenceValuesIncludeName, referenceValuesPopulated } from '../utils/referenceValues';
 import {
   buildSetupSteps,
   requiredStepsReady,
@@ -223,8 +224,8 @@ const CreateTrusteeConfigFooter: FC<{
           isInline
           isPlain
           title={t(
-            'A TrusteeConfig named {{name}} already exists in {{ns}} — rename to create another.',
-            { name, ns: namespace },
+            'A TrusteeConfig named {{name}} already exists in {{nsName}} — rename to create another.',
+            { name, nsName: namespace },
           )}
         />
       )}
@@ -322,12 +323,15 @@ const DeployTrusteeWizard: FC = () => {
     (tc.status?.isReady === true ||
       (tc.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'));
   const kbsUp = (kbsDeploy?.status?.readyReplicas ?? 0) > 0 || tcReady;
-  const rv = (rvpsCm?.data?.['reference-values.json'] ?? '').trim();
-  const refValuesSet = tcCreated && rv !== '' && rv !== '[]' && rv !== '{}';
+  // Reference values live in the `reference_value` key on operator v1.2+; the
+  // legacy `reference-values.json` key is also accepted (operator skew).
+  const refValuesSet = tcCreated && referenceValuesPopulated(rvpsCm?.data);
   // The Initdata tab registers the pod-config measurement under a platform-appropriate
   // RVPS name — init_data on bare-metal TDX, pcr08 on cloud peer pods — so detect either
   // so a cloud-only deployment isn't shown as "initdata not registered".
-  const initdataRegistered = INITDATA_REFVAL_NAMES.some((n) => rv.includes(n));
+  const initdataRegistered = INITDATA_REFVAL_NAMES.some((n) =>
+    referenceValuesIncludeName(rvpsCm?.data, n),
+  );
   const controllerRunning = (operatorDeploy?.status?.readyReplicas ?? 0) > 0;
   const route = findKbsRoute(routes ?? []);
   const routeAdmitted = !!route && (route.status?.ingress ?? []).some((ing) => !!ing.host);
