@@ -55,7 +55,7 @@
       "perspective": "admin",
       "section": "trustee",
       "name": "%plugin__trustee-openshift-console-plugin~Overview%",
-      "href": "/trustee"
+      "href": "/trustee/overview"
     },
     "flags": { "required": ["TRUSTEE_TRUSTEECONFIG"] }
   },
@@ -116,6 +116,15 @@
     "properties": {
       "exact": true,
       "path": "/trustee",
+      "component": { "$codeRef": "TrusteeOverviewRedirect" }
+    },
+    "flags": { "required": ["TRUSTEE_TRUSTEECONFIG"] }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/trustee/overview",
       "component": { "$codeRef": "TrusteeAttestation" }
     },
     "flags": { "required": ["TRUSTEE_TRUSTEECONFIG"] }
