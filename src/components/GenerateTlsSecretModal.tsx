@@ -29,6 +29,7 @@ import type { JobKind } from '../k8s/types';
 import {
   buildAttestationTokenSecretScript,
   buildHttpsTlsSecretScript,
+  buildSanList,
   isValidSecretName,
 } from '../utils/secretGeneration';
 import { useCanCreateJob } from '../utils/rbac/useTrusteePermissions';
@@ -91,13 +92,11 @@ const GenerateTlsSecretModal: FC<Props> = ({
   const [started, setStarted] = useState(false);
   const [done, setDone] = useState(false);
 
-  // SANs: the in-cluster Service DNS the user typed, plus the apps wildcard so any
-  // passthrough Route on this cluster's ingress domain validates (hub-and-spoke).
-  const san = useMemo(() => {
-    const names = [`DNS:${cn.trim()}`];
-    if (ingressDomain) names.push(`DNS:*.${ingressDomain}`);
-    return names.join(',');
-  }, [cn, ingressDomain]);
+  // SANs: the hostname the user typed — an in-cluster Service name also covers
+  // its .svc.cluster.local FQDN, the only form the in-guest CDH can resolve —
+  // plus the apps wildcard so any passthrough Route on this cluster's ingress
+  // domain validates (hub-and-spoke).
+  const san = useMemo(() => buildSanList(cn, ingressDomain).join(','), [cn, ingressDomain]);
 
   // Distinct Job names so an HTTPS run and a token run never collide.
   const P = `${base}-${isToken ? 'token' : 'tls'}-gen`;
@@ -274,14 +273,14 @@ const GenerateTlsSecretModal: FC<Props> = ({
                       )
                     : ingressDomain
                       ? t(
-                          'SAN: {{cn}} (in-cluster) and *.{{domain}} (covers Routes for remote spokes).',
+                          'SAN: {{cn}} (plus the .svc.cluster.local FQDN when it is an in-cluster Service name) and *.{{domain}} (covers Routes for remote spokes).',
                           {
                             cn: cn.trim(),
                             domain: ingressDomain,
                           },
                         )
                       : t(
-                          'Subject and SAN of the cert. Defaults to the in-cluster KBS Service DNS.',
+                          'Subject and SAN of the cert. Defaults to the in-cluster KBS Service DNS; an in-cluster Service name also covers its .svc.cluster.local FQDN.',
                         )}
                 </HelperTextItem>
               </HelperText>

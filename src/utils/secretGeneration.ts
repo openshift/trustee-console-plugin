@@ -23,6 +23,32 @@ const DNS_1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 export const isValidSecretName = (name: string): boolean =>
   name.length > 0 && name.length <= 253 && DNS_1123.test(name);
 
+/**
+ * Build the subjectAltName entries for a generated KBS certificate.
+ *
+ * An in-cluster Service CN (`kbs-service.<ns>.svc`) also gets its full FQDN
+ * (`…svc.cluster.local`): the in-guest Confidential Data Hub resolves
+ * Kubernetes DNS without the node's search domains, so it can only dial the
+ * FQDN, while the short name keeps validating for ordinary in-cluster
+ * clients. OpenShift's DNS operator serves the FQDN under the fixed cluster
+ * domain `cluster.local`, which is not configurable. Custom hostnames (e.g.
+ * Route names) and already-fully-qualified CNs pass through unchanged.
+ *
+ * `ingressDomain` adds the apps wildcard so any passthrough Route on this
+ * cluster's ingress domain validates (hub-and-spoke).
+ */
+export const buildSanList = (cn: string, ingressDomain?: string): string[] => {
+  const host = cn.trim();
+  const names = [`DNS:${host}`];
+  if (host.endsWith('.svc') && !host.endsWith('.cluster.local')) {
+    names.push(`DNS:${host}.cluster.local`);
+  }
+  if (ingressDomain) {
+    names.push(`DNS:*.${ingressDomain}`);
+  }
+  return names;
+};
+
 /** Escape a value interpolated into a double-quoted bash/openssl argument. */
 const dq = (value: string): string => value.replace(/([\\"$`])/g, '\\$1');
 
