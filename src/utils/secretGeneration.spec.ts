@@ -1,6 +1,7 @@
 import {
   buildAttestationTokenSecretScript,
   buildHttpsTlsSecretScript,
+  buildSanList,
   isValidSecretName,
   type SecretScriptOptions,
 } from './secretGeneration';
@@ -67,6 +68,66 @@ describe('buildHttpsTlsSecretScript', () => {
     expect(script).toContain('"tls.crt":"%s","tls.key":"%s","ca.crt":"%s"');
     expect(script).toContain('"$B64CRT" "$B64KEY" "$B64CA"');
     expect(script).toContain('fieldManager=trustee-tls-gen');
+  });
+
+  it('bakes the short Service name, its cluster-local FQDN and the ingress wildcard into the leaf', () => {
+    const cn = 'kbs-service.trustee-operator-system.svc';
+    const script = buildHttpsTlsSecretScript({
+      ...opts,
+      cn,
+      san: buildSanList(cn, 'apps.example.com').join(','),
+    });
+
+    expect(script).toContain(
+      'subjectAltName=DNS:kbs-service.trustee-operator-system.svc,DNS:kbs-service.trustee-operator-system.svc.cluster.local,DNS:*.apps.example.com',
+    );
+  });
+});
+
+describe('buildSanList', () => {
+  it('covers the short Service name, its cluster-local FQDN and the ingress wildcard by default', () => {
+    expect(buildSanList('kbs-service.trustee-operator-system.svc', 'apps.example.com')).toEqual([
+      'DNS:kbs-service.trustee-operator-system.svc',
+      'DNS:kbs-service.trustee-operator-system.svc.cluster.local',
+      'DNS:*.apps.example.com',
+    ]);
+  });
+
+  it('does not duplicate the FQDN when the CN already is the FQDN', () => {
+    expect(
+      buildSanList('kbs-service.trustee-operator-system.svc.cluster.local', 'apps.example.com'),
+    ).toEqual([
+      'DNS:kbs-service.trustee-operator-system.svc.cluster.local',
+      'DNS:*.apps.example.com',
+    ]);
+  });
+
+  it('passes custom hostnames (e.g. Route names) through unchanged', () => {
+    expect(buildSanList('kbs.trustee.apps.example.com', 'apps.example.com')).toEqual([
+      'DNS:kbs.trustee.apps.example.com',
+      'DNS:*.apps.example.com',
+    ]);
+  });
+
+  it('keeps attestation-token CNs unchanged (the hostname is never contacted)', () => {
+    expect(buildSanList('trustee-config-token', 'apps.example.com')).toEqual([
+      'DNS:trustee-config-token',
+      'DNS:*.apps.example.com',
+    ]);
+  });
+
+  it('omits the ingress wildcard when no ingress domain is known', () => {
+    expect(buildSanList('kbs-service.trustee-operator-system.svc')).toEqual([
+      'DNS:kbs-service.trustee-operator-system.svc',
+      'DNS:kbs-service.trustee-operator-system.svc.cluster.local',
+    ]);
+  });
+
+  it('trims whitespace from the CN', () => {
+    expect(buildSanList('  kbs-service.trustee-operator-system.svc  ')).toEqual([
+      'DNS:kbs-service.trustee-operator-system.svc',
+      'DNS:kbs-service.trustee-operator-system.svc.cluster.local',
+    ]);
   });
 });
 
