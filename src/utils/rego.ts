@@ -1,57 +1,29 @@
 // ---------------------------------------------------------------------------
-// Starter Rego policy templates + a lightweight validator for the Policies tab.
+// Starter Rego template + a lightweight validator for the Policies tab.
 //
 // Trustee's attestation/resource policies are Rego. A bare textarea offers no
 // starting point and accepts anything, so a typo'd policy is only caught when the
-// operator/KBS later rejects it. We provide Permissive / Restricted starters and a
-// shallow structural check (balanced braces/brackets, a package clause, an
-// allow rule) — not a full Rego parser, just enough to catch obvious mistakes
-// before the patch.
+// operator/KBS later rejects it. For the RESOURCE policy we offer a single
+// Permissive starter (it matches the operator's Permissive template) plus a
+// shallow structural check (balanced braces/brackets, a package clause) — not a
+// full Rego parser, just enough to catch obvious mistakes before the patch.
+//
+// We deliberately offer NO starter for the CPU/GPU attestation policies, and no
+// "Restricted" resource starter:
+//   * The operator owns one attestation-policy template per profile and generates
+//     the correct EAR-emitting policy itself (profileType is a TrusteeConfig-level
+//     property, not something the plugin should re-template). A plugin "Restricted"
+//     attestation starter that emits a `default allow` rule would actually BREAK
+//     EAR attestation, because the operator's real policies emit `trust_claims`.
+//   * The old plugin "Restricted" resource starter checked `submods.cpu` (not the
+//     real claim path) and ignored GPU, diverging from the operator's generated
+//     Restricted resource policy. We drop it to avoid confusing, wrong output.
 // ---------------------------------------------------------------------------
 
 /** A permissive resource policy: allow every attested client to fetch secrets. */
 export const PERMISSIVE_RESOURCE_POLICY = `package policy
 
 default allow = true
-`;
-
-/**
- * A restricted resource policy starter: deny by default, allow only when the
- * attestation token's TEE evidence passed (EAR "affirming"/"warning"). Edit the
- * tcb_status / claim names to match your verifier output.
- */
-export const RESTRICTED_RESOURCE_POLICY = `package policy
-
-default allow = false
-
-# Allow only clients whose attestation result is affirming.
-allow {
-    input["submods"]["cpu"]["ear.status"] == "affirming"
-}
-`;
-
-/** A permissive attestation policy: accept all evidence (dev/test). */
-export const PERMISSIVE_ATTESTATION_POLICY = `package policy
-
-default allow = true
-`;
-
-/**
- * A restricted attestation policy starter: require the measurement to match a
- * registered reference value. Replace the reference_values lookup to match RVPS.
- */
-export const RESTRICTED_ATTESTATION_POLICY = `package policy
-
-import future.keywords.in
-
-default allow = false
-
-allow {
-    # Every measured value must appear in the registered reference values.
-    every k, v in input.measurement {
-        v in data.reference[k]
-    }
-}
 `;
 
 export interface RegoTemplate {
@@ -61,19 +33,17 @@ export interface RegoTemplate {
   value: string;
 }
 
-/** Templates offered for a policy, keyed by the policy's ConfigMap suffix. */
+/**
+ * Templates offered for a policy, keyed by the policy's ConfigMap suffix. Only the
+ * resource policy gets a starter (Permissive, matching the operator template); the
+ * CPU/GPU attestation policies get none — the operator generates the correct
+ * EAR-emitting policy for both profiles and the plugin must not re-template it.
+ */
 export const regoTemplatesForPolicy = (suffix: string): RegoTemplate[] => {
   if (suffix === 'resource-policy') {
-    return [
-      { id: 'permissive', label: 'Permissive', value: PERMISSIVE_RESOURCE_POLICY },
-      { id: 'restricted', label: 'Restricted', value: RESTRICTED_RESOURCE_POLICY },
-    ];
+    return [{ id: 'permissive', label: 'Permissive', value: PERMISSIVE_RESOURCE_POLICY }];
   }
-  // CPU/GPU attestation policies share the attestation starters.
-  return [
-    { id: 'permissive', label: 'Permissive', value: PERMISSIVE_ATTESTATION_POLICY },
-    { id: 'restricted', label: 'Restricted', value: RESTRICTED_ATTESTATION_POLICY },
-  ];
+  return [];
 };
 
 /**
@@ -122,11 +92,18 @@ export const validateRego = (text: string): string | undefined => {
 };
 
 const DEFAULT_ALLOW_RE = /^\s*default\s+allow\s*=/m;
+const PERMISSIVE_ALLOW_RE = /^\s*default\s+allow\s*=\s*true\b/m;
 
 /**
- * Non-blocking warning for a Rego policy. Returns a warning string when the
- * policy has no `default allow` rule — the most common cause of Trustee
- * silently denying every attestation request. Returns undefined when ok.
+ * Non-blocking warning for a RESOURCE policy. Returns a warning string when the
+ * policy has no `default allow` rule — the most common cause of Trustee silently
+ * denying every request. Returns undefined when ok.
+ *
+ * This is meaningful only for the resource policy: the CPU/GPU attestation
+ * policies emit an EAR appraisal (a `trust_claims` set), not an `allow` rule, so
+ * the Policies tab deliberately does not run this check against them (it wires
+ * `warn` only to the resource-policy editor) rather than relying on a fragile
+ * content heuristic to tell the two apart.
  */
 export const regoWarning = (text: string): string | undefined => {
   const src = text.trim();
@@ -136,3 +113,22 @@ export const regoWarning = (text: string): string | undefined => {
   }
   return undefined;
 };
+
+/**
+ * Warning builder for the resource-policy editor. Runs {@link regoWarning}, and
+ * additionally flags a profile mismatch: saving a permissive resource policy
+ * (`default allow = true`) while the TrusteeConfig profile is Restricted silently
+ * weakens attestation to permissive without changing `spec.profileType`. The
+ * warning is non-blocking (Save stays enabled) — it only surfaces the downgrade so
+ * it is a deliberate choice, not an accident of clicking the Permissive starter.
+ */
+export const resourcePolicyWarning =
+  (profileType?: string) =>
+  (text: string): string | undefined => {
+    const base = regoWarning(text);
+    if (base) return base;
+    if (profileType === 'Restricted' && PERMISSIVE_ALLOW_RE.test(text.trim())) {
+      return 'This resource policy allows every attested client (default allow = true), but the TrusteeConfig profile is Restricted. Saving it weakens attestation to permissive while spec.profileType still says Restricted — change the profile too if this is intended.';
+    }
+    return undefined;
+  };

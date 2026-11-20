@@ -1,4 +1,4 @@
-import { buildVeritasScript } from './veritas';
+import { buildManualVeritasCommands, buildVeritasScript, generationResourceNames } from './veritas';
 import { RVPS_REFERENCE_VALUES_KEY, RVPS_REFERENCE_VALUES_LEGACY_KEY } from '../k8s/resources';
 
 const opts = {
@@ -31,13 +31,25 @@ describe('buildVeritasScript', () => {
     expect(script).toContain('--initdata /initdata/initdata.toml');
   });
 
-  it("extracts veritas's own artifact under its reference-values.json key", () => {
-    // veritas renders its manifest with the data key `reference-values.json` —
-    // that is the SOURCE artifact key and must not be renamed.
+  it('renders veritas manifest to JSON instead of applying it', () => {
+    // veritas names its own ConfigMap (rvps-reference-values /
+    // trusteeconfig-rvps-reference-values) — never this TrusteeConfig's
+    // operator-managed one — so the manifest must be merged, never applied.
     const script = buildVeritasScript(opts);
     expect(script).toContain(
-      `oc create -f /tmp/out/rvps-reference-values.yaml --dry-run=client -o 'jsonpath={.data.reference-values\\.json}' > /tmp/rv.json`,
+      'oc create -f /tmp/out/rvps-reference-values.yaml --dry-run=client -o json > /tmp/rv-verbatim.json',
     );
+    expect(script).not.toContain('oc apply');
+  });
+
+  it('accepts either veritas data key and payload shape', () => {
+    // Released coco-tools <= 1.12 writes the v1.1 array under
+    // `reference-values.json`; upstream main writes the operator's
+    // `reference_value` map. The merge helper must accept both.
+    const script = buildVeritasScript(opts);
+    expect(script).toContain('vdata.get("reference_value") or vdata.get("reference-values.json")');
+    expect(script).toContain('isinstance(veritas_raw, list)');
+    expect(script).toContain('isinstance(veritas_raw, dict)');
   });
 
   it('merges into the destination key instead of replacing it', () => {
@@ -57,7 +69,6 @@ describe('buildVeritasScript', () => {
     const script = buildVeritasScript(opts);
     // An array payload (veritas's v1.1 wire format) is converted in the Job:
     // each entry becomes name → URL-safe-base64 compact JSON (RVPS local_json).
-    expect(script).toContain('isinstance(veritas_raw, list)');
     expect(script).toContain('base64.urlsafe_b64encode');
     expect(script).toContain('separators=(",", ":")');
   });
@@ -70,5 +81,69 @@ describe('buildVeritasScript', () => {
     expect(script).toContain('{"op": "test", "path": "/metadata/resourceVersion"');
     expect(script).toContain('for attempt in 1 2 3');
     expect(script).toContain('exit 1');
+  });
+});
+
+describe('buildManualVeritasCommands', () => {
+  it('runs the same veritas flags as the in-cluster Job', () => {
+    const cmds = buildManualVeritasCommands({
+      tee: 'tdx',
+      ocpVersion: '4.22.19',
+      rvpsConfigMap: 'tc-rvps-reference-values',
+      namespace: 'trustee-ns',
+    });
+    expect(cmds).toContain('podman run --rm');
+    expect(cmds).toContain('quay.io/openshift_sandboxed_containers/coco-tools:1.12');
+    expect(cmds).toContain('veritas --platform baremetal --tee tdx --ocp-version 4.22.19');
+    expect(cmds).toContain('--authfile /auth/.dockerconfigjson');
+    // Defaults mirror the in-cluster generator's XFAM default.
+    expect(cmds).toContain('--hw-xfam-allow x87 --hw-xfam-allow sse --hw-xfam-allow avx');
+  });
+
+  it('merges into the operator-managed ConfigMap — never applies veritas manifest', () => {
+    const cmds = buildManualVeritasCommands({
+      tee: 'snp',
+      ocpVersion: '4.22.19',
+      rvpsConfigMap: 'tc-rvps-reference-values',
+      namespace: 'trustee-ns',
+    });
+    expect(cmds).toContain('oc patch configmap tc-rvps-reference-values -n trustee-ns --type json');
+    expect(cmds).toContain(
+      'oc get configmap tc-rvps-reference-values -n trustee-ns -o json > rv-cm.json',
+    );
+    // The whole point of the fix: no `oc apply` of veritas's own manifest
+    // (the prose warns against it — so assert on command lines, not prose).
+    expect(cmds.split('\n').findIndex((l) => l.trim().startsWith('oc apply'))).toBe(-1);
+    // Same merge helper as the Job, so the flows cannot drift.
+    expect(cmds).toContain("cat > merge-rv.py <<'PYEOF'");
+    expect(cmds).toContain('merged.update(fresh)');
+    // Mounts a host dir so veritas's output survives the container.
+    expect(cmds).toContain('-v "$PWD/veritas-out:/tmp/out:Z"');
+  });
+
+  it('keeps a placeholder OpenShift version when the cluster version is unknown', () => {
+    const cmds = buildManualVeritasCommands({
+      tee: 'tdx',
+      rvpsConfigMap: 'tc-rvps-reference-values',
+      namespace: 'trustee-ns',
+    });
+    expect(cmds).toContain('--ocp-version <your-ocp-version>');
+  });
+});
+
+describe('generationResourceNames', () => {
+  it('derives every per-run resource name from the TrusteeConfig name', () => {
+    const names = generationResourceNames('trustee-config');
+    expect(names.prefix).toBe('trustee-config-rvps-gen');
+    expect(names.pullSecret).toBe('trustee-config-rvps-gen-pull');
+    expect(names.initdataConfigMap).toBe('trustee-config-rvps-gen-initdata');
+  });
+
+  it('keeps the per-run names distinct from the operator-managed RVPS ConfigMap', () => {
+    // The cleanup path deletes these objects — they must never collide with
+    // anything the operator or another flow owns.
+    const names = generationResourceNames('tc');
+    expect(names.pullSecret).not.toContain('rvps-reference-values');
+    expect(names.initdataConfigMap).not.toContain('rvps-reference-values');
   });
 });

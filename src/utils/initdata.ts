@@ -129,13 +129,26 @@ export const POLICY_DEFAULTS: readonly (readonly [string, boolean])[] = [
 export type SensitiveRequest = string;
 
 /**
- * The one policy toggle we surface in the UI. The doc-critical control is disabling
- * `ExecProcessRequest` (no `oc exec` into the confidential VM). Everything else keeps its
- * secure POLICY_DEFAULTS value; in particular PullImageRequest stays true (disabling it
- * breaks the container) and Set/WriteStream stay false — so we don't expose footgun toggles
- * that only invite reference-value mismatches.
+ * The debugging policy toggles we surface in the UI, each INDEPENDENT and OFF by
+ * default (see POLICY_DEFAULTS). These are development/debugging aids, not a
+ * production default:
+ *   * `ExecProcessRequest` — allow `oc exec` into the confidential VM.
+ *   * `ReadStreamRequest` — allow reading a process's stdout/stderr, i.e. actually
+ *     SEEING the output of an exec'd command (e.g. the fetched secret). This is the
+ *     permission the reviewer's "print the fetched secret" goal needs — NOT
+ *     WriteStreamRequest.
+ *   * `WriteStreamRequest` — allow sending stdin to a process. Only needed for an
+ *     interactive session; kept separate and off unless explicitly wanted.
+ * Enabling one never silently enables another. Everything else keeps its secure
+ * POLICY_DEFAULTS value; in particular PullImageRequest stays true (disabling it
+ * breaks the container) and SetPolicyRequest stays false — we don't expose footgun
+ * toggles that only invite reference-value mismatches.
  */
-export const SENSITIVE_REQUESTS = ['ExecProcessRequest'] as const;
+export const SENSITIVE_REQUESTS = [
+  'ExecProcessRequest',
+  'ReadStreamRequest',
+  'WriteStreamRequest',
+] as const;
 
 export interface InitdataInput {
   trusteeUrl: string;
@@ -333,7 +346,12 @@ export const buildWorkloadPodYaml = (input: WorkloadPodYamlInput): string => {
         ]
       : []),
     '#',
-    '# Put the annotation below on your confidential Pod, then deploy it.',
+    '# Example confidential Pod carrying this initdata. Replace the pod name,',
+    '# image, and command with your workload — but keep the annotation and',
+    '# runtimeClassName exactly as they are (the annotation must match the',
+    '# generated initdata byte for byte, or attestation will not recognize the',
+    '# pod). Then apply it with:',
+    '#   oc apply -f <this-file>.yaml',
     'apiVersion: v1',
     'kind: Pod',
     'metadata:',
@@ -343,8 +361,10 @@ export const buildWorkloadPodYaml = (input: WorkloadPodYamlInput): string => {
     'spec:',
     `  runtimeClassName: ${meta.runtimeClass}`,
     '  containers:',
+    '    # Simple example container — replace with your workload.',
     '    - name: app',
-    '      image: <your-image>',
+    '      image: quay.io/kata-containers/alpine-bash-curl:latest',
+    "      command: ['sh', '-c', 'echo confidential workload started; sleep infinity']",
     '',
   ].join('\n');
 };

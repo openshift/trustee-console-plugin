@@ -174,7 +174,24 @@ export const SavedInitdataPanel: FC<Props> = ({ namespace }) => {
                   }}
                 >
                   {t('Download pod YAML')}
-                </Button>
+                </Button>{' '}
+                <ExpandableSection toggleText={t('Preview pod YAML')}>
+                  <ClipboardCopy
+                    isReadOnly
+                    isCode
+                    variant="expansion"
+                    hoverTip={t('Copy')}
+                    clickTip={t('Copied')}
+                  >
+                    {buildWorkloadPodYaml({
+                      source: it.name,
+                      kbsUrl: it.kbsUrl,
+                      measurement: it.pcr8,
+                      platform: it.platform,
+                      annotation: it.annotation,
+                    })}
+                  </ClipboardCopy>
+                </ExpandableSection>
               </ExpandableSection>
             ))}
           </>

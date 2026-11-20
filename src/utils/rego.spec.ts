@@ -1,20 +1,33 @@
 import {
   PERMISSIVE_RESOURCE_POLICY,
-  RESTRICTED_ATTESTATION_POLICY,
-  RESTRICTED_RESOURCE_POLICY,
   regoTemplatesForPolicy,
   regoWarning,
+  resourcePolicyWarning,
   validateRego,
 } from './rego';
+
+// A trimmed excerpt of the operator's generated CPU/GPU EAR attestation policy:
+// it emits `trust_claims` instead of an `allow` rule, and has no `default allow`.
+const EAR_ATTESTATION_POLICY = `package policy
+
+import rego.v1
+
+default executables := 33
+default hardware := 97
+
+trust_claims := {
+  "executables": executables,
+  "hardware": hardware,
+}
+`;
 
 describe('validateRego', () => {
   it('accepts the shipped permissive template', () => {
     expect(validateRego(PERMISSIVE_RESOURCE_POLICY)).toBeUndefined();
   });
 
-  it('accepts the shipped restricted templates (balanced braces)', () => {
-    expect(validateRego(RESTRICTED_RESOURCE_POLICY)).toBeUndefined();
-    expect(validateRego(RESTRICTED_ATTESTATION_POLICY)).toBeUndefined();
+  it('accepts a balanced EAR attestation policy', () => {
+    expect(validateRego(EAR_ATTESTATION_POLICY)).toBeUndefined();
   });
 
   it('rejects an empty policy', () => {
@@ -53,13 +66,11 @@ default msg = "a string with } and { inside"
 });
 
 describe('regoWarning', () => {
-  it('returns undefined for shipped templates (all have default allow)', () => {
+  it('returns undefined for the permissive resource template (has default allow)', () => {
     expect(regoWarning(PERMISSIVE_RESOURCE_POLICY)).toBeUndefined();
-    expect(regoWarning(RESTRICTED_RESOURCE_POLICY)).toBeUndefined();
-    expect(regoWarning(RESTRICTED_ATTESTATION_POLICY)).toBeUndefined();
   });
 
-  it('warns when no default allow rule is present', () => {
+  it('warns when a policy has no default allow rule', () => {
     const policy = 'package policy\nallow { input.ok == true }\n';
     expect(regoWarning(policy)).toMatch(/default allow/i);
   });
@@ -77,17 +88,45 @@ describe('regoWarning', () => {
   });
 });
 
+describe('resourcePolicyWarning', () => {
+  const restrictivePolicy = 'package policy\n\ndefault allow = false\n';
+
+  it('flags a permissive policy saved under a Restricted profile', () => {
+    const warn = resourcePolicyWarning('Restricted');
+    expect(warn(PERMISSIVE_RESOURCE_POLICY)).toMatch(/weakens attestation to permissive/i);
+  });
+
+  it('does not flag a restrictive policy under a Restricted profile', () => {
+    expect(resourcePolicyWarning('Restricted')(restrictivePolicy)).toBeUndefined();
+  });
+
+  it('does not flag a permissive policy under a Permissive profile', () => {
+    expect(resourcePolicyWarning('Permissive')(PERMISSIVE_RESOURCE_POLICY)).toBeUndefined();
+  });
+
+  it('does not flag a mismatch when the profile is unknown', () => {
+    expect(resourcePolicyWarning(undefined)(PERMISSIVE_RESOURCE_POLICY)).toBeUndefined();
+  });
+
+  it('still surfaces the missing-default-allow warning regardless of profile', () => {
+    const noAllow = 'package policy\nallow { input.ok == true }\n';
+    expect(resourcePolicyWarning('Restricted')(noAllow)).toMatch(/default allow/i);
+    expect(resourcePolicyWarning('Permissive')(noAllow)).toMatch(/default allow/i);
+  });
+});
+
 describe('regoTemplatesForPolicy', () => {
-  it('returns Permissive + Restricted resource-policy templates', () => {
+  it('offers only a Permissive starter for the resource policy (no Restricted)', () => {
     const tpls = regoTemplatesForPolicy('resource-policy');
-    expect(tpls.map((t) => t.id)).toEqual(['permissive', 'restricted']);
+    expect(tpls.map((t) => t.id)).toEqual(['permissive']);
     expect(tpls[0].value).toBe(PERMISSIVE_RESOURCE_POLICY);
   });
 
-  it('returns attestation templates for CPU/GPU policies', () => {
-    const cpu = regoTemplatesForPolicy('attestation-policy-cpu');
-    const gpu = regoTemplatesForPolicy('attestation-policy-gpu');
-    expect(cpu.map((t) => t.id)).toEqual(['permissive', 'restricted']);
-    expect(gpu).toEqual(cpu);
+  it('offers no starter buttons for the CPU attestation policy', () => {
+    expect(regoTemplatesForPolicy('attestation-policy-cpu')).toEqual([]);
+  });
+
+  it('offers no starter buttons for the GPU attestation policy', () => {
+    expect(regoTemplatesForPolicy('attestation-policy-gpu')).toEqual([]);
   });
 });

@@ -50,6 +50,7 @@ import {
   DeploymentGVK,
   IngressConfigGVK,
   RouteGVK,
+  SecretGVK,
   TRUSTEE_KBS_DEPLOYMENT,
   TRUSTEE_NAMESPACE,
   TRUSTEE_OPERATOR_DEPLOYMENT,
@@ -57,7 +58,13 @@ import {
   TrusteeConfigModel,
   TrusteeConfigModelRef,
 } from '../k8s/resources';
-import type { ConfigMapKind, DeploymentKind, RouteKind, TrusteeConfigKind } from '../k8s/types';
+import type {
+  ConfigMapKind,
+  DeploymentKind,
+  RouteKind,
+  SecretKind,
+  TrusteeConfigKind,
+} from '../k8s/types';
 import { findKbsRoute } from '../utils/readiness';
 import { INITDATA_REFVAL_NAMES } from '../utils/initdata';
 import { referenceValuesIncludeName, referenceValuesPopulated } from '../utils/referenceValues';
@@ -506,6 +513,22 @@ const DeployTrusteeWizard: FC = () => {
   });
   const ingressDomain = ingressConfig?.spec?.domain ?? '';
 
+  // Existence check for the typed attestation-token secret: a TrusteeConfig
+  // referencing a missing secret is left without any status condition (the
+  // operator only logs the cause), which is silent from the UI. Non-blocking —
+  // users routinely create the secret right after running the wizard.
+  const [tokenSecretObj, tokenSecretLoaded, tokenSecretError] = useK8sWatchResource<SecretKind>(
+    tokenSecret.trim() !== '' && namespace.trim() !== ''
+      ? { groupVersionKind: SecretGVK, name: tokenSecret.trim(), namespace: namespace.trim() }
+      : null,
+  ) as [SecretKind | undefined, boolean, unknown];
+  // A named secret that doesn't exist 404s: `loaded` never flips true, only the
+  // error is set (see ConfigMapEditor's `settled`). Treat either signal — or a
+  // watch that resolved without an object — as "not found (or unreadable) here";
+  // the warning is advisory either way.
+  const tokenSecretMissing =
+    Boolean(tokenSecretError) || (tokenSecretLoaded && !tokenSecretObj?.metadata?.name);
+
   const restricted = profileType === 'Restricted';
   const httpsRequiredMissing = restricted && httpsSecret.trim() === '';
   // The Restricted profile verifies the attestation token KBS issues, so it needs a
@@ -879,10 +902,10 @@ const DeployTrusteeWizard: FC = () => {
                         <HelperTextItem>
                           {restricted
                             ? t(
-                                'Restricted enforces strict attestation policies and requires TLS — use it for production.',
+                                'Restricted generates a strict resource policy (secrets released only to an affirming EAR result), requires TLS, and verifies the attestation token — use it for production. It does not change the CPU/GPU attestation policies, which use the same defaults for either profile.',
                               )
                             : t(
-                                'Permissive accepts most attestation evidence — good for getting started in dev and test.',
+                                'Permissive generates a resource policy that releases secrets to any attested client — good for getting started in dev and test. It uses the same CPU/GPU attestation policies as Restricted.',
                               )}
                         </HelperTextItem>
                       </HelperText>
@@ -996,6 +1019,24 @@ const DeployTrusteeWizard: FC = () => {
                         </HelperTextItem>
                       </HelperText>
                     </FormHelperText>
+                    {tokenSecretMissing && (
+                      <Alert
+                        variant="warning"
+                        isInline
+                        className="trustee-openshift-console-plugin__mt"
+                        title={t(
+                          'The secret {{name}} was not found in namespace {{namespace}} yet',
+                          {
+                            name: tokenSecret.trim(),
+                            namespace: namespace.trim(),
+                          },
+                        )}
+                      >
+                        {t(
+                          'A TrusteeConfig that references a missing attestation-token secret is left without any status condition — the cause appears only in the operator logs. Create the secret before the KBS starts (or immediately after finishing the wizard), or pick an existing secret.',
+                        )}
+                      </Alert>
+                    )}
                     <Button
                       variant="secondary"
                       className="trustee-openshift-console-plugin__mt"

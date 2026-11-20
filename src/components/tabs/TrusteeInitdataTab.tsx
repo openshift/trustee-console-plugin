@@ -19,6 +19,7 @@ import {
   Checkbox,
   ClipboardCopy,
   Content,
+  ExpandableSection,
   Form,
   FormGroup,
   FormHelperText,
@@ -231,8 +232,18 @@ const TrusteeInitdataTab: FC<TrusteeTabProps> = ({ obj }) => {
   }, [platform, refvalTouched]);
 
   const requestHelp: Record<SensitiveRequest, string> = {
-    ExecProcessRequest: t('Allow oc/kubectl exec into the confidential VM (recommended off).'),
+    ExecProcessRequest: t(
+      'Debugging only. Allow oc/kubectl exec to run a command inside the confidential VM. Off by default.',
+    ),
+    ReadStreamRequest: t(
+      'Debugging only. Allow reading a command’s stdout/stderr — needed to actually SEE exec output (e.g. a fetched secret printed with oc exec … cat …). Enable alongside exec. Off by default.',
+    ),
+    WriteStreamRequest: t(
+      'Debugging only. Allow sending stdin to a process — needed only for an interactive exec session. Leave off unless you need interactive input. Off by default.',
+    ),
   };
+
+  const debugRequestsEnabled = SENSITIVE_REQUESTS.some((req) => allow[req]);
 
   const generate = async () => {
     setBusy(true);
@@ -434,16 +445,22 @@ const TrusteeInitdataTab: FC<TrusteeTabProps> = ({ obj }) => {
     }
   };
 
+  // The example Pod offered for download and inline preview — derived from the
+  // same result as the annotation and measurement shown above, so all three
+  // always agree.
+  const podYaml = result
+    ? buildWorkloadPodYaml({
+        source: name,
+        kbsUrl: trusteeUrl.trim(),
+        measurement: result.measurement,
+        platform: result.platform,
+        annotation: result.annotation,
+      })
+    : undefined;
+
   const download = () => {
-    if (!result) return;
-    const content = buildWorkloadPodYaml({
-      source: name,
-      kbsUrl: trusteeUrl.trim(),
-      measurement: result.measurement,
-      platform: result.platform,
-      annotation: result.annotation,
-    });
-    const url = URL.createObjectURL(new Blob([content], { type: 'application/yaml' }));
+    if (!podYaml) return;
+    const url = URL.createObjectURL(new Blob([podYaml], { type: 'application/yaml' }));
     const a = document.createElement('a');
     a.href = url;
     a.download = `initdata-${name}.yaml`;
@@ -705,7 +722,7 @@ const TrusteeInitdataTab: FC<TrusteeTabProps> = ({ obj }) => {
                   </FormHelperText>
                 </FormGroup>
 
-                <FormGroup label={t('Kata Agent policy')} fieldId="id-policy">
+                <FormGroup label={t('Kata Agent policy (debugging)')} fieldId="id-policy">
                   {SENSITIVE_REQUESTS.map((req) => (
                     <Checkbox
                       key={req}
@@ -714,11 +731,25 @@ const TrusteeInitdataTab: FC<TrusteeTabProps> = ({ obj }) => {
                       description={requestHelp[req]}
                       isChecked={allow[req]}
                       onChange={(_e, checked) => {
+                        // Each permission is independent — toggling one never
+                        // silently enables another.
                         setAllow((prev) => ({ ...prev, [req]: checked }));
                       }}
                       className={`${PREFIX}__mb`}
                     />
                   ))}
+                  {debugRequestsEnabled && (
+                    <Alert
+                      variant="warning"
+                      isInline
+                      isPlain
+                      title={t('Debugging permissions can expose confidential data')}
+                    >
+                      {t(
+                        'Allowing process execution and output streaming lets anyone with exec access run commands inside the confidential VM and read their output — including secrets the workload fetched. Enable these only for troubleshooting in a non-production environment, and turn them off again afterwards. The defaults (all off) keep the workload locked down.',
+                      )}
+                    </Alert>
+                  )}
                 </FormGroup>
 
                 <Button
@@ -864,6 +895,22 @@ const TrusteeInitdataTab: FC<TrusteeTabProps> = ({ obj }) => {
                       </Button>
                     </SplitItem>
                   </Split>
+                  {podYaml && (
+                    <ExpandableSection
+                      toggleText={t('Preview pod YAML')}
+                      className={`${PREFIX}__mt`}
+                    >
+                      <ClipboardCopy
+                        isReadOnly
+                        isCode
+                        variant="expansion"
+                        hoverTip={t('Copy')}
+                        clickTip={t('Copied')}
+                      >
+                        {podYaml}
+                      </ClipboardCopy>
+                    </ExpandableSection>
+                  )}
                   {shareStatus === 'ok' && (
                     <div className={`${PREFIX}__mt`}>
                       <ResourceLink

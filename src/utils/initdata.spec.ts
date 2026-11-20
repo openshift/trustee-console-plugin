@@ -7,11 +7,13 @@
  * no DOM needed.
  */
 import {
+  buildInitdata,
   buildInitdataToml,
   buildWorkloadPodYaml,
   computeInitDataMrConfigId,
   computeMeasurement,
   computePcr8,
+  SENSITIVE_REQUESTS,
   type InitdataInput,
 } from './initdata';
 
@@ -146,5 +148,104 @@ describe('buildWorkloadPodYaml', () => {
     expect(y).not.toContain('# KBS endpoint:');
     expect(y).toContain('runtimeClassName: kata-cc');
     expect(y).toContain('name: my-confidential-workload');
+  });
+
+  it('carries a simple, clearly editable container example and apply instructions', () => {
+    const y = buildWorkloadPodYaml({ annotation: 'X' });
+    // A runnable example container (not a bare placeholder), marked as
+    // replaceable, plus explicit replace/apply guidance.
+    expect(y).toContain('image: quay.io/kata-containers/alpine-bash-curl:latest');
+    expect(y).toContain(
+      "command: ['sh', '-c', 'echo confidential workload started; sleep infinity']",
+    );
+    expect(y).toContain('Replace the pod name,');
+    expect(y).toContain('image, and command with your workload');
+    expect(y).toContain('oc apply -f <this-file>.yaml');
+    // The annotation and runtime class are the parts that must NOT be edited.
+    expect(y).toContain('keep the annotation and');
+  });
+
+  it('embeds the exact generated annotation and measurement from buildInitdata', async () => {
+    // The downloaded/previewed Pod must carry byte-for-byte the annotation the
+    // initdata builder produced (and whose measurement got registered) — a
+    // regenerated or truncated annotation would fail attestation.
+    const result = await buildInitdata(base);
+    const y = buildWorkloadPodYaml({
+      annotation: result.annotation,
+      measurement: result.measurement,
+      platform: result.platform,
+    });
+    expect(y).toContain(`io.katacontainers.config.hypervisor.cc_init_data: "${result.annotation}"`);
+    expect(y).toContain(`#   ${result.measurement}`);
+    // And the annotation really is the gzip+base64 of the generated initdata.
+    const { gunzipSync } = await import('node:zlib');
+    expect(gunzipSync(Buffer.from(result.annotation, 'base64')).toString()).toBe(result.toml);
+  });
+});
+
+describe('Kata Agent debugging permissions', () => {
+  // Pull the rendered `default <Request> := <bool>` out of the policy.rego the
+  // initdata carries, so assertions target the generated permission directly.
+  const renderedPermission = (toml: string, req: string): boolean | undefined => {
+    const m = new RegExp(`default ${req} := (true|false)`).exec(toml);
+    return m ? m[1] === 'true' : undefined;
+  };
+
+  it('surfaces exactly the three independent debugging toggles', () => {
+    expect([...SENSITIVE_REQUESTS]).toEqual([
+      'ExecProcessRequest',
+      'ReadStreamRequest',
+      'WriteStreamRequest',
+    ]);
+  });
+
+  it('production defaults (no overrides) leave all three disabled', () => {
+    const toml = buildInitdataToml({ ...base, policyOverrides: {} });
+    for (const req of SENSITIVE_REQUESTS) {
+      expect(renderedPermission(toml, req)).toBe(false);
+    }
+  });
+
+  it('enabling exec + read for debugging renders exactly those, WriteStream stays off', () => {
+    // ReadStreamRequest — not WriteStreamRequest — is what makes exec output
+    // (e.g. a fetched secret) visible.
+    const toml = buildInitdataToml({
+      ...base,
+      policyOverrides: { ExecProcessRequest: true, ReadStreamRequest: true },
+    });
+    expect(renderedPermission(toml, 'ExecProcessRequest')).toBe(true);
+    expect(renderedPermission(toml, 'ReadStreamRequest')).toBe(true);
+    expect(renderedPermission(toml, 'WriteStreamRequest')).toBe(false);
+  });
+
+  it('read and write stream permissions are independent of each other', () => {
+    const readOnly = buildInitdataToml({ ...base, policyOverrides: { ReadStreamRequest: true } });
+    expect(renderedPermission(readOnly, 'ReadStreamRequest')).toBe(true);
+    expect(renderedPermission(readOnly, 'WriteStreamRequest')).toBe(false);
+
+    const writeOnly = buildInitdataToml({ ...base, policyOverrides: { WriteStreamRequest: true } });
+    expect(renderedPermission(writeOnly, 'WriteStreamRequest')).toBe(true);
+    expect(renderedPermission(writeOnly, 'ReadStreamRequest')).toBe(false);
+  });
+
+  it('enabling exec does NOT silently enable any stream permission', () => {
+    const toml = buildInitdataToml({ ...base, policyOverrides: { ExecProcessRequest: true } });
+    expect(renderedPermission(toml, 'ExecProcessRequest')).toBe(true);
+    expect(renderedPermission(toml, 'ReadStreamRequest')).toBe(false);
+    expect(renderedPermission(toml, 'WriteStreamRequest')).toBe(false);
+  });
+
+  it('disabling debugging again restores the restrictive defaults', () => {
+    const toml = buildInitdataToml({
+      ...base,
+      policyOverrides: {
+        ExecProcessRequest: false,
+        ReadStreamRequest: false,
+        WriteStreamRequest: false,
+      },
+    });
+    for (const req of SENSITIVE_REQUESTS) {
+      expect(renderedPermission(toml, req)).toBe(false);
+    }
   });
 });

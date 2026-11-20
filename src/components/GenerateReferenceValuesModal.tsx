@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -37,13 +37,14 @@ import {
   JobModel,
   RoleBindingModel,
   RoleModel,
+  RVPS_REFERENCE_VALUES_SUFFIX,
   SecretGVK,
   SecretModel,
   ServiceAccountModel,
 } from '../k8s/resources';
 import type { ConfigMapKind, JobKind, SecretKind } from '../k8s/types';
 import { jobFailed, jobFailureMessage } from '../utils/job';
-import { buildVeritasScript } from '../utils/veritas';
+import { buildVeritasScript, generationResourceNames } from '../utils/veritas';
 import { useCanCreateJob } from '../utils/rbac/useTrusteePermissions';
 import PermissionHint from '../utils/rbac/PermissionHint';
 import './trustee.css';
@@ -53,6 +54,15 @@ interface Props {
   namespace: string;
   tee: 'tdx' | 'snp';
   defaultOcpVersion?: string;
+  /** XFAM features detected from the node's NFD cpuid labels, when available. */
+  defaultXfam?: string;
+  /**
+   * Whether the detection actually observed extended-feature labels
+   * (AVX512F/AMX). Without them NFD may simply not publish those labels, so
+   * the default can under-represent the hardware and must be flagged as a
+   * fallback to verify — never presented as a verified reading.
+   */
+  defaultXfamVerified?: boolean;
   onClose: () => void;
 }
 
@@ -69,6 +79,45 @@ const isNotFound = (e: unknown): boolean => {
 };
 
 /**
+ * Delete the per-run generation resources: the copied pull secret (a copy of
+ * the cluster pull secret — it must not outlive the run in this namespace) and
+ * the initdata ConfigMap. Best-effort: the Job/SA/Role/RoleBinding are reused
+ * across runs and stay. A failed delete is refreshed by the next run's
+ * delete-then-create, and the modal's mount-time sweep catches leftovers.
+ */
+const cleanupTransientResources = async (
+  trusteeConfigName: string,
+  namespace: string,
+): Promise<void> => {
+  const names = generationResourceNames(trusteeConfigName);
+  const targets = [
+    {
+      model: SecretModel,
+      resource: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        metadata: { name: names.pullSecret, namespace },
+      },
+    },
+    {
+      model: ConfigMapModel,
+      resource: {
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: names.initdataConfigMap, namespace },
+      },
+    },
+  ];
+  for (const target of targets) {
+    try {
+      await k8sDelete(target);
+    } catch (e) {
+      if (!isNotFound(e)) throw e;
+    }
+  }
+};
+
+/**
  * One-click reference-value generation. Runs `veritas` in an in-cluster Job using
  * the cluster pull secret, then patches the result into the operator's RVPS
  * ConfigMap. The Job, its SA/Role/RoleBinding, the initdata ConfigMap, and the
@@ -79,6 +128,8 @@ const GenerateReferenceValuesModal: FC<Props> = ({
   namespace,
   tee,
   defaultOcpVersion,
+  defaultXfam,
+  defaultXfamVerified,
   onClose,
 }) => {
   const { t } = useTranslation('plugin__trustee-openshift-console-plugin');
@@ -86,15 +137,26 @@ const GenerateReferenceValuesModal: FC<Props> = ({
   const [ocpVersion, setOcpVersion] = useState(defaultOcpVersion ?? '');
   const [initdata, setInitdata] = useState('');
   const [gpu, setGpu] = useState(false);
-  const [xfam, setXfam] = useState('x87,sse,avx');
+  const [xfam, setXfam] = useState(defaultXfam ?? 'x87,sse,avx');
+  // The pre-filled XFAM is only a verified reading when NFD actually observed
+  // extended-feature labels; otherwise it is a fallback that may under-represent
+  // the hardware. The warning applies while the field still holds that default —
+  // once the user supplies their own value, provenance of the default is moot.
+  const xfamDefault = defaultXfam ?? 'x87,sse,avx';
+  const xfamUnverified = !defaultXfamVerified && xfam === xfamDefault;
   const { allowed: canCreateJob, loading: rbacLoading } = useCanCreateJob(namespace);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [started, setStarted] = useState(false);
 
-  // Fixed name prefix for every resource this flow creates.
-  const P = `${trusteeConfigName}-rvps-gen`;
-  const rvpsConfigMap = `${trusteeConfigName}-rvps-reference-values`;
+  // Fixed names for every resource this flow creates — shared with the cleanup
+  // path below so the two can never drift apart.
+  const names = generationResourceNames(trusteeConfigName);
+  const P = names.prefix;
+  // Use the shared constant (not a hardcoded suffix) so the automated write can
+  // never drift from the operator-managed ConfigMap name the rest of the plugin
+  // reads/writes.
+  const rvpsConfigMap = `${trusteeConfigName}${RVPS_REFERENCE_VALUES_SUFFIX}`;
 
   // Pre-check: the Job mounts a copy of the cluster pull secret to pull the OCP
   // release image. On RBAC-restricted clusters that secret isn't readable and the
@@ -125,6 +187,39 @@ const GenerateReferenceValuesModal: FC<Props> = ({
   const succeeded = (job?.status?.succeeded ?? 0) > 0;
   const failed = jobFailed(job);
   const failureDetail = jobFailureMessage(job);
+
+  // Once the Job reaches a terminal state, delete the per-run resources (copied
+  // pull secret + initdata ConfigMap) — see cleanupTransientResources. Guarded
+  // by a ref so repeated watch updates fire it once; onGenerate resets the ref
+  // because each run creates fresh per-run resources.
+  const terminal = succeeded || failed;
+  const cleanedUp = useRef(false);
+  useEffect(() => {
+    if (!terminal || cleanedUp.current) return;
+    cleanedUp.current = true;
+    // Best-effort — the next run's delete-then-create refreshes both anyway.
+    cleanupTransientResources(trusteeConfigName, namespace).catch(() => undefined);
+  }, [terminal, trusteeConfigName, namespace]);
+
+  // Sweep leftovers: a previous run whose modal was closed before the Job
+  // finished leaves the copied pull secret behind. If that Job is already
+  // terminal, clean up now. (If it is still running there is nothing to do —
+  // the secret is in use; the next modal open sweeps it.)
+  useEffect(() => {
+    let cancelled = false;
+    // A rejected get means no previous Job exists — nothing to sweep.
+    k8sGet<JobKind>({ model: JobModel, name: names.prefix, ns: namespace })
+      .then((previous) => {
+        if (cancelled) return;
+        if ((previous?.status?.succeeded ?? 0) > 0 || jobFailed(previous)) {
+          cleanupTransientResources(trusteeConfigName, namespace).catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [trusteeConfigName, namespace, names.prefix]);
 
   const valid = ocpVersion.trim() !== '';
 
@@ -171,7 +266,7 @@ const GenerateReferenceValuesModal: FC<Props> = ({
       }
 
       // Delete-then-create the pull secret so its content is always fresh.
-      const pullSecretName = `${P}-pull`;
+      const pullSecretName = names.pullSecret;
       const pullSecret: SecretKind = {
         apiVersion: 'v1',
         kind: 'Secret',
@@ -187,7 +282,7 @@ const GenerateReferenceValuesModal: FC<Props> = ({
       await k8sCreate({ model: SecretModel, data: pullSecret });
 
       // b. initdata ConfigMap — only when an initdata.toml was provided (optional).
-      const initdataCmName = `${P}-initdata`;
+      const initdataCmName = names.initdataConfigMap;
       if (hasInitdata) {
         const initdataCm: ConfigMapKind = {
           apiVersion: 'v1',
@@ -316,6 +411,9 @@ const GenerateReferenceValuesModal: FC<Props> = ({
       }
       await k8sCreate({ model: JobModel, data: jobResource });
 
+      // A fresh run creates fresh per-run resources — re-arm the terminal-state
+      // cleanup for them.
+      cleanedUp.current = false;
       setStarted(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -435,10 +533,14 @@ const GenerateReferenceValuesModal: FC<Props> = ({
             />
             <FormHelperText>
               <HelperText>
-                <HelperTextItem>
-                  {t(
-                    'Comma-separated TEE XFAM features to allow. veritas warns that without these the default attestation policy’s xfam check fails. Edit to match your hardware.',
-                  )}
+                <HelperTextItem variant={xfamUnverified ? 'warning' : 'default'}>
+                  {xfamUnverified
+                    ? t(
+                        'This is a fallback, not a verified reading of the node: its NFD labels do not report AVX-512 or AMX features, which TDX servers commonly have (avx512, pkru, amx). Verify against the node — for example with lscpu on the host — and edit before generating. A wrong XFAM makes the default attestation policy’s xfam check reject valid workloads.',
+                      )
+                    : t(
+                        'Comma-separated TEE XFAM features to allow, detected from the node’s NFD cpuid labels. veritas warns that without these the default attestation policy’s xfam check fails. Edit to match your hardware.',
+                      )}
                 </HelperTextItem>
               </HelperText>
             </FormHelperText>
@@ -467,7 +569,7 @@ const GenerateReferenceValuesModal: FC<Props> = ({
               {succeeded && (
                 <Alert variant="success" isInline title={t('Reference values written')}>
                   {t(
-                    'veritas finished and the measurements were written into {{cm}}. The Reference values editor below now reflects them.',
+                    'veritas finished and the measurements were written into {{cm}}. The Reference values editor below now reflects them. The copied pull secret and initdata ConfigMap the Job used were removed.',
                     { cm: rvpsConfigMap },
                   )}
                 </Alert>

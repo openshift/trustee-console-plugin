@@ -12,8 +12,18 @@ function determineRule(key) {
   if (key.includes('WithCount')) {
     return 1;
   }
-  if (key.includes('_plural')) {
+  if (key.endsWith('_plural')) {
     return 2;
+  }
+  // i18next v21+ plural suffixes (English: _one / _other) — appended to the
+  // base key whenever a t() call passes `count`. Default the value to the base
+  // text (suffix stripped); otherwise the default-fill copies the suffix into
+  // the rendered English ("2 restarts_other").
+  if (key.endsWith('_one')) {
+    return 4;
+  }
+  if (key.endsWith('_other')) {
+    return 5;
   }
   return 3;
 }
@@ -46,6 +56,12 @@ function updateFile(fileName) {
           [originalKey] = keys[i].split('_plural');
           updatedFile[keys[i]] = pluralize(originalKey);
           break;
+        case 4:
+        case 5: {
+          const suffix = keys[i].endsWith('_one') ? '_one' : '_other';
+          updatedFile[keys[i]] = keys[i].slice(0, -suffix.length);
+          break;
+        }
         default:
           updatedFile[keys[i]] = keys[i];
       }

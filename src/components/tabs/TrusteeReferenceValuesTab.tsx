@@ -26,7 +26,8 @@ import {
   RVPS_REFERENCE_VALUES_KEY,
 } from '../../k8s/resources';
 import type { ConfigMapKind, NodeKind } from '../../k8s/types';
-import { cvmPeerPodsEnabled, detectClusterTee } from '../../utils/topology';
+import { cvmPeerPodsEnabled, detectClusterTee, detectNodeXfam } from '../../utils/topology';
+import { buildManualVeritasCommands } from '../../utils/veritas';
 import { useCanPatchConfigMap } from '../../utils/rbac/useTrusteePermissions';
 import type { TrusteeTabProps } from './types';
 import '../trustee.css';
@@ -58,6 +59,14 @@ const TrusteeReferenceValuesTab: FC<TrusteeTabProps> = ({ obj }) => {
   const detectedTee = useMemo(() => detectClusterTee(nodes ?? []), [nodes]);
   const tee: Tee = teeOverride ?? detectedTee ?? 'tdx';
 
+  // Same idea for the generator's XFAM default: derive it from the node's NFD
+  // cpuid labels instead of a hardcoded guess (the user can still edit the
+  // field in the modal). NFD may omit the AVX-512/AMX labels entirely, so the
+  // detection also reports whether it actually observed extended features —
+  // without them the value is a fallback the modal must flag for verification,
+  // not a verified reading of the hardware.
+  const xfamDetection = useMemo(() => detectNodeXfam(nodes ?? []), [nodes]);
+
   // veritas generates BARE-METAL host measurements — meaningless for cloud peer pods,
   // whose reference value is the initdata PCR 8 (registered from the Initdata tab). Detect
   // the cloud case so we show the right guidance instead of the veritas per-TEE-platform flow.
@@ -83,12 +92,12 @@ const TrusteeReferenceValuesTab: FC<TrusteeTabProps> = ({ obj }) => {
     );
   }
 
-  const veritasCmd = [
-    `podman run --rm -v ./initdata.toml:/initdata.toml:Z \\`,
-    `  quay.io/openshift_sandboxed_containers/coco-tools:1.12 \\`,
-    `  veritas --platform baremetal --tee ${tee} -i /initdata.toml > rvps-configmap.yaml`,
-    `oc apply -f rvps-configmap.yaml`,
-  ].join('\n');
+  const veritasCmd = buildManualVeritasCommands({
+    tee,
+    ocpVersion,
+    rvpsConfigMap: `${name}-rvps-reference-values`,
+    namespace,
+  });
 
   return (
     <PageSection>
@@ -98,6 +107,8 @@ const TrusteeReferenceValuesTab: FC<TrusteeTabProps> = ({ obj }) => {
           namespace={namespace}
           tee={tee}
           defaultOcpVersion={ocpVersion}
+          defaultXfam={xfamDetection.xfam}
+          defaultXfamVerified={xfamDetection.extendedFeaturesObserved}
           onClose={() => {
             setModalOpen(false);
           }}
@@ -172,13 +183,15 @@ const TrusteeReferenceValuesTab: FC<TrusteeTabProps> = ({ obj }) => {
           <ExpandableSection toggleText={t('Manual / advanced (run veritas yourself)')}>
             <Content component="p" className="trustee-openshift-console-plugin__mb">
               {t(
-                'Prefer to run veritas outside the cluster? Generate the ConfigMap manually and import it below.',
+                'Prefer to run veritas outside the cluster? These commands run the same generation as the in-cluster Job and merge the result into {{cm}} — do not apply veritas’s own manifest with oc apply, its ConfigMap name and data key never match the operator’s.',
+                { cm: `${name}-rvps-reference-values` },
               )}
             </Content>
             <ClipboardCopy
               isReadOnly
               isCode
               variant="expansion"
+              isExpanded={false}
               hoverTip={t('Copy')}
               clickTip={t('Copied')}
             >
